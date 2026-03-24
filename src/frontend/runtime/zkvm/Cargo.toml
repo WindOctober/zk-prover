@@ -1,0 +1,9 @@
+[package]
+name = "zk-prover-frontend-zkvm"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+sp1-zkvm.workspace = true
+zk-prover = { path = "../../../../" }

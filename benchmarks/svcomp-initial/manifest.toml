@@ -1,0 +1,125 @@
+schema_version = 1
+name = "svcomp-initial"
+source_repo = "https://gitlab.com/sosy-lab/benchmarking/sv-benchmarks.git"
+source_commit = "ca46fe670b5dcbcd3495bd23689353a8ea1fb86b"
+local_bundle_root = "vendor/sv-benchmarks"
+
+[[benchmark]]
+id = "validation_if"
+category = "control-flow"
+input_kind = "c"
+path = "vendor/sv-benchmarks/c/validation-crafted/if.c"
+task = "vendor/sv-benchmarks/c/validation-crafted/if.yml"
+property = "unreach-call"
+expected_verdict = "false"
+line_count = 27
+features = ["nondet", "if", "signed-add", "bad-state-call"]
+notes = "Small branch-only reachability task with two nondeterministic integers."
+
+[[benchmark]]
+id = "validation_ternary"
+category = "control-flow"
+input_kind = "c"
+path = "vendor/sv-benchmarks/c/validation-crafted/ternary.c"
+task = "vendor/sv-benchmarks/c/validation-crafted/ternary.yml"
+property = "unreach-call"
+expected_verdict = "false"
+line_count = 22
+features = ["nondet", "conditional-expr", "if", "bad-state-call"]
+notes = "Compact `?:` control-flow example with nested conditional expressions."
+
+[[benchmark]]
+id = "bitvector_implicitunsignedconversion_1"
+category = "bitvectors"
+input_kind = "c"
+path = "vendor/sv-benchmarks/c/bitvector-regression/implicitunsignedconversion-1.c"
+task = "vendor/sv-benchmarks/c/bitvector-regression/implicitunsignedconversion-1.yml"
+property = "unreach-call"
+expected_verdict = "false"
+line_count = 17
+features = ["unsigned-compare", "if", "goto-error-canonical"]
+notes = "Unsigned-vs-signed comparison case using the canonical SV-COMP ERROR label idiom."
+
+[[benchmark]]
+id = "bitvector_implicitunsignedconversion_2"
+category = "bitvectors"
+input_kind = "c"
+path = "vendor/sv-benchmarks/c/bitvector-regression/implicitunsignedconversion-2.c"
+task = "vendor/sv-benchmarks/c/bitvector-regression/implicitunsignedconversion-2.yml"
+property = "unreach-call"
+expected_verdict = "true"
+line_count = 17
+features = ["unsigned-compare", "if", "goto-error-canonical"]
+notes = "True variant of the unsigned comparison regression pair."
+
+[[benchmark]]
+id = "bitvector_integerpromotion_2"
+category = "bitvectors"
+input_kind = "c"
+path = "vendor/sv-benchmarks/c/bitvector-regression/integerpromotion-2.c"
+task = "vendor/sv-benchmarks/c/bitvector-regression/integerpromotion-2.yml"
+property = "unreach-call"
+expected_verdict = "true"
+line_count = 17
+features = ["unsigned-char", "bitnot", "shift", "goto-error-canonical"]
+notes = "Compact integer-promotion sanity check with 8-bit truncation."
+
+[[benchmark]]
+id = "bitvector_integerpromotion_3"
+category = "bitvectors"
+input_kind = "c"
+path = "vendor/sv-benchmarks/c/bitvector-regression/integerpromotion-3.c"
+task = "vendor/sv-benchmarks/c/bitvector-regression/integerpromotion-3.yml"
+property = "unreach-call"
+expected_verdict = "false"
+line_count = 17
+features = ["unsigned-char", "bitnot", "shift", "goto-error-canonical"]
+notes = "False variant of the integer-promotion regression pair."
+
+[[benchmark]]
+id = "bitvector_signextension_1"
+category = "bitvectors"
+input_kind = "c"
+path = "vendor/sv-benchmarks/c/bitvector-regression/signextension-1.c"
+task = "vendor/sv-benchmarks/c/bitvector-regression/signextension-1.yml"
+property = "unreach-call"
+expected_verdict = "false"
+line_count = 30
+features = ["short", "unsigned-short", "casts", "sign-extension", "goto-error-canonical"]
+notes = "False sign-extension regression over 16-bit and 32-bit scalar conversions."
+
+[[benchmark]]
+id = "bitvector_signextension_2"
+category = "bitvectors"
+input_kind = "c"
+path = "vendor/sv-benchmarks/c/bitvector-regression/signextension-2.c"
+task = "vendor/sv-benchmarks/c/bitvector-regression/signextension-2.yml"
+property = "unreach-call"
+expected_verdict = "true"
+line_count = 30
+features = ["short", "unsigned-short", "casts", "sign-extension", "goto-error-canonical"]
+notes = "True variant of the 16-bit sign-extension regression pair."
+
+[[benchmark]]
+id = "bitvector_signextension2_1"
+category = "bitvectors"
+input_kind = "c"
+path = "vendor/sv-benchmarks/c/bitvector-regression/signextension2-1.c"
+task = "vendor/sv-benchmarks/c/bitvector-regression/signextension2-1.yml"
+property = "unreach-call"
+expected_verdict = "true"
+line_count = 22
+features = ["long", "unsigned-long", "casts", "ilp32-long32", "goto-error-canonical"]
+notes = "True ILP32 cast-regression case where `long` remains 32-bit."
+
+[[benchmark]]
+id = "bitvector_signextension2_2"
+category = "bitvectors"
+input_kind = "c"
+path = "vendor/sv-benchmarks/c/bitvector-regression/signextension2-2.c"
+task = "vendor/sv-benchmarks/c/bitvector-regression/signextension2-2.yml"
+property = "unreach-call"
+expected_verdict = "false"
+line_count = 22
+features = ["long", "unsigned-long", "casts", "ilp32-long32", "goto-error-canonical"]
+notes = "False variant of the ILP32 cast-regression pair."
