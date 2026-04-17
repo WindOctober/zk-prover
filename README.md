@@ -28,6 +28,8 @@ Current implementation status:
   - Frontend runtime wrappers for native execution and zkVM validation.
 - `src/backend`
   - Backend CNF data structures and the verification-layer to SAT encoder.
+- `crates/zkpv-*`
+  - Vendored frontend crates for the current C parser/lowering path, kept in-tree so `zk-prover` builds without a sibling `ztor` checkout.
 - `benchmarks/svcomp-initial`
   - Local SV-COMP subset used for smoke tests and proof runs.
 

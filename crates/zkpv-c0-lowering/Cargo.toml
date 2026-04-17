@@ -1,0 +1,11 @@
+[package]
+name = "zkpv-c0-lowering"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+zkpv-c0-ast = { path = "../zkpv-c0-ast" }
+zkpv-c0-parser = { path = "../zkpv-c0-parser" }
+zkpv-btor2 = { path = "../zkpv-btor2" }

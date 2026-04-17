@@ -31,6 +31,11 @@ proof-backends = ["backend-solver", "backend-plonky3", "backend-hyperplonk"]
 members = [
     "crates/p3-lookup-backend",
     "crates/resolution-verifier-core",
+    "crates/zkpv-ir",
+    "crates/zkpv-btor2",
+    "crates/zkpv-c0-ast",
+    "crates/zkpv-c0-parser",
+    "crates/zkpv-c0-lowering",
     "src/frontend/runtime/runner",
     "src/frontend/runtime/zkvm",
 ]
@@ -39,6 +44,7 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
 
 [workspace.dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -48,9 +54,10 @@ sp1-build = "6.0.2"
 sp1-sdk = { version = "6.0.2", features = ["blocking"] }
 sp1-zkvm = "6.0.2"
 thiserror = "1"
-zkpv-c0-ast = { path = "../ztor/workspaces/frontend/crates/c0-ast" }
-zkpv-c0-lowering = { path = "../ztor/workspaces/frontend/crates/c0-lowering" }
-zkpv-c0-parser = { path = "../ztor/workspaces/frontend/crates/c0-parser" }
+winnow = "1.0"
+zkpv-c0-ast = { path = "crates/zkpv-c0-ast" }
+zkpv-c0-lowering = { path = "crates/zkpv-c0-lowering" }
+zkpv-c0-parser = { path = "crates/zkpv-c0-parser" }
 
 [dependencies]
 p3-air = { version = "0.5.2", optional = true }

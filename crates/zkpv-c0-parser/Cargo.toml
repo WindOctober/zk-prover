@@ -1,0 +1,10 @@
+[package]
+name = "zkpv-c0-parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+winnow.workspace = true
+zkpv-c0-ast = { path = "../zkpv-c0-ast" }
