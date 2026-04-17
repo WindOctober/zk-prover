@@ -9,7 +9,8 @@ pub fn normalize_svcomp_source(source: &str) -> Cow<'_, str> {
         let trimmed = line.trim();
 
         if trimmed == "goto ERROR;" {
-            let indent = line.split_once("goto")
+            let indent = line
+                .split_once("goto")
                 .map(|(prefix, _)| prefix)
                 .unwrap_or("");
             lines.push(format!("{indent}reach_error();"));

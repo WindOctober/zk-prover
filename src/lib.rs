@@ -6,9 +6,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 pub use backend::cnf::CnfFormula;
-pub use frontend::fixtures::DEFAULT_FIXTURES;
+pub use frontend::fixtures::{
+    DEFAULT_FIXTURES, RESOLUTION_ZKVM_FIXTURES, SAT_PHASE_FIXTURES, SVCOMP_BENCHMARK_ROOT,
+    SVCOMP_FIXTURES, SYNTHETIC_FIXTURES, SYNTHETIC_FIXTURE_ROOT, UNSAT_PIPELINE_FIXTURES,
+};
 pub use frontend::ir::VerificationProgram;
 use frontend::normalize::normalize_svcomp_source;
+pub use resolution_verifier_core::{
+    decode_witness_words, encode_witness_words, verify_flat_resolution_witness,
+    verify_witness_words, FlatResolutionWitness, ResolutionVerificationError,
+    ResolutionVerificationSummary,
+};
 use zkpv_c0_lowering::{lower_translation_unit, LoweringError};
 use zkpv_c0_parser::{parse_translation_unit, ParseError};
 
@@ -36,7 +44,7 @@ pub struct CnfSummary {
     pub nondet_symbols: u32,
     pub cnf_vars: u32,
     pub cnf_clauses: u32,
-    pub cnf_hash: u64,
+    pub cnf_digest: [u8; 32],
 }
 
 impl CnfSummary {
@@ -48,7 +56,7 @@ impl CnfSummary {
             nondet_symbols: encoded.nondet_symbols,
             cnf_vars: encoded.cnf.num_vars,
             cnf_clauses: encoded.cnf.clauses.len() as u32,
-            cnf_hash: fnv1a64(encoded.cnf.to_dimacs().as_bytes()),
+            cnf_digest: encoded.cnf.sha256_digest(),
         }
     }
 }
@@ -117,15 +125,6 @@ pub fn validate_translation_artifact(
         ));
     }
     Ok(CnfSummary::from_encoded(&encoded))
-}
-
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
 }
 
 fn infer_encoding_steps(program: &VerificationProgram) -> Result<u32, EncodeError> {
@@ -250,9 +249,26 @@ mod tests {
 
     #[test]
     fn encodes_all_current_benchmarks() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmarks/svcomp-initial");
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(SVCOMP_BENCHMARK_ROOT);
 
-        for fixture in DEFAULT_FIXTURES {
+        for fixture in SVCOMP_FIXTURES {
+            let source = fs::read_to_string(root.join(fixture)).unwrap();
+            let artifact = build_translation_artifact_from_c_source(&source)
+                .unwrap_or_else(|err| panic!("failed to build artifact for {fixture}: {err}"));
+            let summary = validate_translation_artifact(&artifact)
+                .unwrap_or_else(|err| panic!("failed to validate artifact for {fixture}: {err}"));
+            assert!(
+                summary.cnf_vars > 0 && summary.cnf_clauses > 0,
+                "empty CNF for {fixture}"
+            );
+        }
+    }
+
+    #[test]
+    fn encodes_all_current_synthetic_fixtures() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(SYNTHETIC_FIXTURE_ROOT);
+
+        for fixture in SYNTHETIC_FIXTURES {
             let source = fs::read_to_string(root.join(fixture)).unwrap();
             let artifact = build_translation_artifact_from_c_source(&source)
                 .unwrap_or_else(|err| panic!("failed to build artifact for {fixture}: {err}"));
@@ -267,7 +283,7 @@ mod tests {
 
     #[test]
     fn keeps_if_fixture_cnf_compact() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("benchmarks/svcomp-initial");
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(SVCOMP_BENCHMARK_ROOT);
         let fixture = "vendor/sv-benchmarks/c/validation-crafted/if.c";
         let source = fs::read_to_string(root.join(fixture)).unwrap();
         let started = Instant::now();

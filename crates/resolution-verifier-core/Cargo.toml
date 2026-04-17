@@ -1,0 +1,12 @@
+[package]
+name = "resolution-verifier-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+serde = { version = "1", features = ["alloc", "derive"], default-features = false }

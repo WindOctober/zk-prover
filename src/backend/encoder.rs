@@ -171,10 +171,7 @@ fn merge_states(
 
     for variable in live_vars {
         let first = &incoming[0].vars[variable];
-        if incoming
-            .iter()
-            .all(|state| state.vars[variable] == *first)
-        {
+        if incoming.iter().all(|state| state.vars[variable] == *first) {
             vars.insert(variable.clone(), first.clone());
             continue;
         }
@@ -227,7 +224,9 @@ fn process_block(
 
     match &block.terminator {
         Terminator::Goto(target) => {
-            enqueue_successor(program, blocks, live_in, *target, guard, env, pending, bad_paths);
+            enqueue_successor(
+                program, blocks, live_in, *target, guard, env, pending, bad_paths,
+            );
         }
         Terminator::Return => {}
         Terminator::Branch {
@@ -348,7 +347,12 @@ fn guarded_and(lhs: Lit, rhs: Lit, builder: &mut CnfBuilder) -> Lit {
     }
 }
 
-fn guarded_bits(cond: Lit, then_bits: &[Lit], else_bits: &[Lit], builder: &mut CnfBuilder) -> Vec<Lit> {
+fn guarded_bits(
+    cond: Lit,
+    then_bits: &[Lit],
+    else_bits: &[Lit],
+    builder: &mut CnfBuilder,
+) -> Vec<Lit> {
     if then_bits == else_bits {
         return then_bits.to_vec();
     }

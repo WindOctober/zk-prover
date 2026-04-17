@@ -1,0 +1,22 @@
+[package]
+name = "p3-lookup-backend"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+p3-air = { version = "0.5.2" }
+p3-baby-bear = { version = "0.5.2" }
+p3-batch-stark = { version = "0.5.2" }
+p3-challenger = { version = "0.5.2" }
+p3-commit = { version = "0.5.2" }
+p3-dft = { version = "0.5.2", features = ["parallel"] }
+p3-field = { version = "0.5.2" }
+p3-fri = { version = "0.5.2" }
+p3-lookup = { version = "0.5.2" }
+p3-matrix = { version = "0.5.2" }
+p3-merkle-tree = { version = "0.5.2" }
+p3-symmetric = { version = "0.5.2" }
+p3-uni-stark = { version = "0.5.2", features = ["parallel"] }
+rand = { version = "0.10.0", features = ["std_rng"] }
+thiserror.workspace = true

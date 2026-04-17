@@ -34,14 +34,14 @@ fn main() {
     } else {
         args.fixtures.clone()
     };
-    let benchmark_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../../benchmarks/svcomp-initial");
+    let benchmark_root =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../benchmarks/svcomp-initial");
 
     let prover = ProverClient::builder().cpu().build();
     let pk = prover.setup(ELF).expect("failed to setup SP1 proving key");
 
     println!(
-        "fixture,run,exec_ms,prove_ms,verify_ms,instructions,gas,validate_cycles,steps,blocks,program_vars,nondet_symbols,cnf_vars,cnf_clauses,cnf_hash"
+        "fixture,run,exec_ms,prove_ms,verify_ms,instructions,gas,validate_cycles,steps,blocks,program_vars,nondet_symbols,cnf_vars,cnf_clauses,cnf_digest"
     );
 
     for fixture in fixtures {
@@ -49,14 +49,7 @@ fn main() {
             .unwrap_or_else(|err| panic!("failed to read fixture `{fixture}`: {err}"));
 
         for run_index in 0..args.repeat {
-            let summary = run_one(
-                &prover,
-                &pk,
-                &fixture,
-                &source,
-                run_index,
-                args.skip_prove,
-            );
+            let summary = run_one(&prover, &pk, &fixture, &source, run_index, args.skip_prove);
             println!("{summary}");
         }
     }
@@ -116,7 +109,7 @@ fn run_one<P: Prover>(
     }
 
     format!(
-        "{fixture},{run_index},{execute_ms:.3},{prove_ms:.3},{verify_ms:.3},{instructions},{gas},{validate_cycles},{steps},{blocks},{program_vars},{nondet_symbols},{cnf_vars},{cnf_clauses},{cnf_hash}",
+        "{fixture},{run_index},{execute_ms:.3},{prove_ms:.3},{verify_ms:.3},{instructions},{gas},{validate_cycles},{steps},{blocks},{program_vars},{nondet_symbols},{cnf_vars},{cnf_clauses},{cnf_digest}",
         instructions = report.total_instruction_count(),
         gas = report.gas().unwrap_or(0),
         validate_cycles = report.cycle_tracker.get("validate").copied().unwrap_or(0),
@@ -126,7 +119,7 @@ fn run_one<P: Prover>(
         nondet_symbols = execute_summary.nondet_symbols,
         cnf_vars = execute_summary.cnf_vars,
         cnf_clauses = execute_summary.cnf_clauses,
-        cnf_hash = execute_summary.cnf_hash,
+        cnf_digest = hex_digest(&execute_summary.cnf_digest),
     )
 }
 
@@ -134,4 +127,14 @@ fn build_stdin(artifact: &TranslationArtifact) -> SP1Stdin {
     let mut stdin = SP1Stdin::new();
     stdin.write(artifact);
     stdin
+}
+
+fn hex_digest(bytes: &[u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }

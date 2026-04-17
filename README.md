@@ -30,3 +30,14 @@ Current implementation status:
   - Backend CNF data structures and the verification-layer to SAT encoder.
 - `benchmarks/svcomp-initial`
   - Local SV-COMP subset used for smoke tests and proof runs.
+
+## Benchmarks
+
+- `scripts/run_svcomp_bench.sh`
+  - Runs the official SV-COMP slice through the end-to-end `C -> CNF -> SAT` pipeline.
+  - Uses `examples/bench_unsat_pipeline.rs` with `--preset svcomp`, so UNSAT proving is only attempted if a selected fixture is actually UNSAT.
+- `scripts/run_unsat_bench.sh`
+  - Runs the synthetic UNSAT-heavy slice for resolution-proof and backend benchmarking.
+  - Uses `examples/bench_unsat_pipeline.rs` with `--preset synthetic-unsat`.
+- `examples/bench_resolution_zkvms.rs`
+  - Compares HyperPlonk, SP1, Jolt, and zkWASM on prevalidated UNSAT witnesses from the synthetic fixture set.

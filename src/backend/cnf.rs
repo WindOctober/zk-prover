@@ -1,6 +1,7 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 pub type Lit = i32;
 
@@ -11,6 +12,8 @@ pub struct CnfFormula {
 }
 
 impl CnfFormula {
+    const NORM_MAGIC: &'static [u8; 7] = b"ZKPCNF1";
+
     pub fn to_dimacs(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!("p cnf {} {}\n", self.num_vars, self.clauses.len()));
@@ -22,6 +25,26 @@ impl CnfFormula {
             out.push_str("0\n");
         }
         out
+    }
+
+    pub fn to_canonical_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(Self::NORM_MAGIC);
+        out.extend_from_slice(&self.num_vars.to_be_bytes());
+        out.extend_from_slice(&(self.clauses.len() as u32).to_be_bytes());
+
+        for clause in &self.clauses {
+            out.extend_from_slice(&(clause.len() as u32).to_be_bytes());
+            for lit in clause {
+                out.extend_from_slice(&lit.to_be_bytes());
+            }
+        }
+
+        out
+    }
+
+    pub fn sha256_digest(&self) -> [u8; 32] {
+        Sha256::digest(self.to_canonical_bytes()).into()
     }
 }
 
@@ -336,5 +359,25 @@ impl CnfBuilder {
 impl fmt::Display for CnfFormula {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.to_dimacs())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CnfFormula;
+
+    #[test]
+    fn canonical_digest_preserves_raw_clause_layout() {
+        let lhs = CnfFormula {
+            num_vars: 4,
+            clauses: vec![vec![3, -1, 3], vec![2, -4], vec![-4, 2]],
+        };
+        let rhs = CnfFormula {
+            num_vars: 4,
+            clauses: vec![vec![-4, 2], vec![3, -1]],
+        };
+
+        assert_ne!(lhs.to_canonical_bytes(), rhs.to_canonical_bytes());
+        assert_ne!(lhs.sha256_digest(), rhs.sha256_digest());
     }
 }

@@ -6,6 +6,13 @@ The selected benchmark files are vendored locally under:
 
 - `vendor/sv-benchmarks`
 
+Local synthetic fixtures used for parser/encoder experiments live under:
+
+- `tests/fixtures`
+
+They are intentionally kept out of this benchmark bundle so the `benchmarks/` tree stays
+reserved for vendored or externally sourced benchmark sets.
+
 ## Selection Principles
 
 - branch-first, loop-free tasks
@@ -32,6 +39,11 @@ Right now the best-fit SV-COMP tasks are the ones that stay close to:
 Within that subset, a pure loop-free batch exists, but it is small.
 So this initial paper-track slice now prefers exact frontend fit over benchmark count.
 
+In practice, the current zero-extension frontend path is narrower than the broader loop-free
+SV-COMP subset. Several official scalar bitvector regressions are still vendored locally, but
+they are not part of the selected benchmark slice because the current frontend collapses them
+into trivial CNFs that are not useful for benchmarking.
+
 ## Normalization Note
 
 Some vendored SV-COMP tasks use the canonical pattern:
@@ -46,15 +58,17 @@ This keeps the local bundle faithful to SV-COMP while avoiding a broader `goto` 
 
 ## Current Set
 
-The current set contains ten loop-free tasks:
+The current selected set contains two official SV-COMP tasks:
 
 1. `c/validation-crafted/if.c`
 2. `c/validation-crafted/ternary.c`
-3. `c/bitvector-regression/implicitunsignedconversion-1.c`
-4. `c/bitvector-regression/implicitunsignedconversion-2.c`
-5. `c/bitvector-regression/integerpromotion-2.c`
-6. `c/bitvector-regression/integerpromotion-3.c`
-7. `c/bitvector-regression/signextension-1.c`
-8. `c/bitvector-regression/signextension-2.c`
-9. `c/bitvector-regression/signextension2-1.c`
-10. `c/bitvector-regression/signextension2-2.c`
+
+These two are the current benchmark baseline because they both:
+
+- parse and lower without extending the frontend
+- encode to non-trivial CNFs
+- stay inside the intended no-loop, no-pointer, single-function slice
+
+The currently excluded vendored bitvector regressions under `c/bitvector-regression` remain
+useful as parser/lowering regression inputs, but they are not counted as benchmark fixtures for
+this slice because they currently encode to degenerate CNFs such as `1 var / 2 clauses`.
