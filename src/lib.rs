@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 pub use backend::cnf::CnfFormula;
+use backend::phase2::FormulaCommitment;
 pub use frontend::fixtures::{
     DEFAULT_FIXTURES, RESOLUTION_ZKVM_FIXTURES, SAT_PHASE_FIXTURES, SVCOMP_BENCHMARK_ROOT,
     SVCOMP_FIXTURES, SYNTHETIC_FIXTURES, SYNTHETIC_FIXTURE_ROOT, UNSAT_PIPELINE_FIXTURES,
@@ -44,6 +45,7 @@ pub struct CnfSummary {
     pub nondet_symbols: u32,
     pub cnf_vars: u32,
     pub cnf_clauses: u32,
+    pub cnf_commitment: FormulaCommitment,
     pub cnf_digest: [u8; 32],
 }
 
@@ -56,6 +58,8 @@ impl CnfSummary {
             nondet_symbols: encoded.nondet_symbols,
             cnf_vars: encoded.cnf.num_vars,
             cnf_clauses: encoded.cnf.clauses.len() as u32,
+            cnf_commitment: FormulaCommitment::from_formula(&encoded.cnf)
+                .expect("canonical CNF commitment must fit in the STARK field"),
             cnf_digest: encoded.cnf.sha256_digest(),
         }
     }

@@ -5,10 +5,7 @@ use sp1_sdk::blocking::{ProveRequest, Prover, ProverClient, SP1Stdin};
 use sp1_sdk::include_elf;
 use sp1_sdk::utils::setup_logger;
 use sp1_sdk::{Elf, ProvingKey};
-use zk_prover::{
-    build_translation_artifact_from_c_source, validate_translation_artifact, CnfSummary,
-    TranslationArtifact, DEFAULT_FIXTURES,
-};
+use zk_prover::{encode_c_source_to_cnf, CnfSummary, DEFAULT_FIXTURES};
 
 const ELF: Elf = include_elf!("zk-prover-frontend-zkvm");
 
@@ -17,7 +14,11 @@ struct Args {
     #[arg(long = "fixture")]
     fixtures: Vec<String>,
     #[arg(long)]
+    benchmark_root: Option<PathBuf>,
+    #[arg(long)]
     skip_prove: bool,
+    #[arg(long)]
+    proof_only: bool,
     #[arg(long, default_value_t = 1)]
     repeat: u32,
 }
@@ -34,14 +35,15 @@ fn main() {
     } else {
         args.fixtures.clone()
     };
-    let benchmark_root =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../benchmarks/svcomp-initial");
+    let benchmark_root = args.benchmark_root.unwrap_or_else(|| {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../benchmarks/svcomp-initial")
+    });
 
     let prover = ProverClient::builder().cpu().build();
     let pk = prover.setup(ELF).expect("failed to setup SP1 proving key");
 
     println!(
-        "fixture,run,exec_ms,prove_ms,verify_ms,instructions,gas,validate_cycles,steps,blocks,program_vars,nondet_symbols,cnf_vars,cnf_clauses,cnf_digest"
+        "fixture,run,exec_ms,prove_ms,verify_ms,proof_bytes,instructions,gas,validate_cycles,steps,blocks,program_vars,nondet_symbols,cnf_vars,cnf_clauses,commit_num_vars,commit_num_clauses,commit_width,commit_mix_a,commit_mix_b,cnf_digest"
     );
 
     for fixture in fixtures {
@@ -49,7 +51,15 @@ fn main() {
             .unwrap_or_else(|err| panic!("failed to read fixture `{fixture}`: {err}"));
 
         for run_index in 0..args.repeat {
-            let summary = run_one(&prover, &pk, &fixture, &source, run_index, args.skip_prove);
+            let summary = run_one(
+                &prover,
+                &pk,
+                &fixture,
+                &source,
+                run_index,
+                args.skip_prove,
+                args.proof_only,
+            );
             println!("{summary}");
         }
     }
@@ -62,29 +72,42 @@ fn run_one<P: Prover>(
     source: &str,
     run_index: u32,
     skip_prove: bool,
+    proof_only: bool,
 ) -> String {
-    let artifact =
-        build_translation_artifact_from_c_source(source).expect("failed to build SAT artifact");
-    let local_summary =
-        validate_translation_artifact(&artifact).expect("local SAT artifact validation failed");
-    let stdin = build_stdin(&artifact);
+    let local_encoded = encode_c_source_to_cnf(source).expect("failed to encode C source to CNF");
+    let local_summary = CnfSummary::from_encoded(&local_encoded);
+    let stdin = build_stdin(source);
 
-    let execute_started = Instant::now();
-    let (mut public_values, report) = prover
-        .execute(ELF, stdin.clone())
-        .calculate_gas(true)
-        .run()
-        .expect("execution failed");
-    let execute_ms = execute_started.elapsed().as_secs_f64() * 1000.0;
-    let execute_summary = public_values.read::<CnfSummary>();
+    let mut execute_ms = 0.0;
+    let mut instructions = 0u64;
+    let mut gas = 0u64;
+    let mut validate_cycles = 0u64;
+    let mut expected_summary = local_summary.clone();
 
-    assert_eq!(
-        local_summary, execute_summary,
-        "local/SP1 encoding diverged for fixture `{fixture}`"
-    );
+    if !proof_only {
+        let execute_started = Instant::now();
+        let (mut public_values, report) = prover
+            .execute(ELF, stdin.clone())
+            .calculate_gas(true)
+            .run()
+            .expect("execution failed");
+        execute_ms = execute_started.elapsed().as_secs_f64() * 1000.0;
+        let execute_summary = public_values.read::<CnfSummary>();
+
+        assert_eq!(
+            local_summary, execute_summary,
+            "local/SP1 encoding diverged for fixture `{fixture}`"
+        );
+
+        instructions = report.total_instruction_count();
+        gas = report.gas().unwrap_or(0);
+        validate_cycles = report.cycle_tracker.get("validate").copied().unwrap_or(0);
+        expected_summary = execute_summary;
+    }
 
     let mut prove_ms = 0.0;
     let mut verify_ms = 0.0;
+    let mut proof_bytes = 0u64;
 
     if !skip_prove {
         let prove_started = Instant::now();
@@ -94,6 +117,7 @@ fn run_one<P: Prover>(
             .run()
             .expect("proof generation failed");
         prove_ms = prove_started.elapsed().as_secs_f64() * 1000.0;
+        proof_bytes = bincode::serialized_size(&proof).expect("failed to measure proof size");
 
         let verify_started = Instant::now();
         prover
@@ -103,29 +127,35 @@ fn run_one<P: Prover>(
 
         let proof_summary = proof.public_values.read::<CnfSummary>();
         assert_eq!(
-            execute_summary, proof_summary,
-            "execute/prove public values diverged for fixture `{fixture}`"
+            expected_summary, proof_summary,
+            "expected/prove public values diverged for fixture `{fixture}`"
         );
     }
 
     format!(
-        "{fixture},{run_index},{execute_ms:.3},{prove_ms:.3},{verify_ms:.3},{instructions},{gas},{validate_cycles},{steps},{blocks},{program_vars},{nondet_symbols},{cnf_vars},{cnf_clauses},{cnf_digest}",
-        instructions = report.total_instruction_count(),
-        gas = report.gas().unwrap_or(0),
-        validate_cycles = report.cycle_tracker.get("validate").copied().unwrap_or(0),
-        steps = execute_summary.steps,
-        blocks = execute_summary.blocks,
-        program_vars = execute_summary.program_vars,
-        nondet_symbols = execute_summary.nondet_symbols,
-        cnf_vars = execute_summary.cnf_vars,
-        cnf_clauses = execute_summary.cnf_clauses,
-        cnf_digest = hex_digest(&execute_summary.cnf_digest),
+        "{fixture},{run_index},{execute_ms:.3},{prove_ms:.3},{verify_ms:.3},{proof_bytes},{instructions},{gas},{validate_cycles},{steps},{blocks},{program_vars},{nondet_symbols},{cnf_vars},{cnf_clauses},{commit_num_vars},{commit_num_clauses},{commit_width},{commit_mix_a},{commit_mix_b},{cnf_digest}",
+        proof_bytes = proof_bytes,
+        instructions = instructions,
+        gas = gas,
+        validate_cycles = validate_cycles,
+        steps = expected_summary.steps,
+        blocks = expected_summary.blocks,
+        program_vars = expected_summary.program_vars,
+        nondet_symbols = expected_summary.nondet_symbols,
+        cnf_vars = expected_summary.cnf_vars,
+        cnf_clauses = expected_summary.cnf_clauses,
+        commit_num_vars = expected_summary.cnf_commitment.num_vars,
+        commit_num_clauses = expected_summary.cnf_commitment.num_clauses,
+        commit_width = expected_summary.cnf_commitment.max_clause_width,
+        commit_mix_a = expected_summary.cnf_commitment.mix_a,
+        commit_mix_b = expected_summary.cnf_commitment.mix_b,
+        cnf_digest = hex_digest(&expected_summary.cnf_digest),
     )
 }
 
-fn build_stdin(artifact: &TranslationArtifact) -> SP1Stdin {
+fn build_stdin(source: &str) -> SP1Stdin {
     let mut stdin = SP1Stdin::new();
-    stdin.write(artifact);
+    stdin.write(&source.to_owned());
     stdin
 }
 

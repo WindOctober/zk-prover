@@ -75,6 +75,7 @@ p3-merkle-tree = { version = "0.5.2", optional = true }
 p3-symmetric = { version = "0.5.2", optional = true }
 p3-uni-stark = { version = "0.5.2", optional = true, features = ["parallel"] }
 plonkish_backend = { git = "https://github.com/Noi1r/plonkish", rev = "4ca545c17d3fc28e2f2fbe8220afd3e5b9b9b28e", default-features = false, features = ["parallel"], optional = true }
+postcard = { version = "1", features = ["alloc"] }
 rand = { version = "0.10.0", features = ["std_rng"], optional = true }
 rand08 = { package = "rand", version = "0.8", features = ["std_rng"], optional = true }
 resolution-verifier-core.workspace = true

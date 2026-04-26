@@ -25,7 +25,10 @@ use rand::{rngs::StdRng, SeedableRng};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use crate::backend::phase2::{
-    UnsatPublicStatement, ValidatedResolutionInstance, ValidatedSatInstance,
+    commitment_literal_value, CommittedUnsatPublicStatement, FormulaCommitment,
+    UnsatPublicStatement, ValidatedResolutionInstance, ValidatedSatInstance, COMMIT_INDEX_SCALE_A,
+    COMMIT_INDEX_SCALE_B, COMMIT_LEN_SCALE_A, COMMIT_LEN_SCALE_B, COMMIT_ROOT_ALPHA_A,
+    COMMIT_ROOT_ALPHA_B, COMMIT_SLOT_SCALE_A, COMMIT_SLOT_SCALE_B,
 };
 
 type Val = BabyBear;
@@ -46,6 +49,10 @@ const FRI_MAX_LOG_ARITY: usize = 1;
 const FRI_NUM_QUERIES: usize = 8;
 const FRI_COMMIT_POW_BITS: usize = 0;
 const FRI_QUERY_POW_BITS: usize = 0;
+// Keep these tight: the regression test below recomputes both values with
+// Plonky3's symbolic evaluator instead of relying on hand-maintained guesses.
+const SAT_MAX_CONSTRAINT_DEGREE: usize = 4;
+const RESOLUTION_MAX_CONSTRAINT_DEGREE: usize = 9;
 
 pub struct Plonky3SatProof {
     pub proof: UniProof<MyConfig>,
@@ -92,6 +99,7 @@ const SAT_PRODUCT_COL: usize = 3;
 const SAT_PERM_ALPHA: u32 = 1_000_003;
 const SAT_PERM_BETA: u32 = 97_003;
 const UNSAT_PUBLIC_VALUES: usize = 3;
+const UNSAT_COMMITTED_PUBLIC_VALUES: usize = 5;
 const RES_IS_SEMANTIC_COL: usize = 0;
 const RES_IS_TABLE_COL: usize = 1;
 const RES_IS_QUERY_COL: usize = 2;
@@ -101,6 +109,8 @@ const RES_LEFT_ID_COL: usize = 5;
 const RES_RIGHT_ID_COL: usize = 6;
 const RES_PIVOT_COL: usize = 7;
 const RES_PIVOT_INV_COL: usize = 8;
+const RES_COMMIT_ACC_A_COL: usize = 9;
+const RES_COMMIT_ACC_B_COL: usize = 10;
 const RES_CLAUSE_MULT_COL: usize = 16;
 const RES_LEFT_ID_INV_COL: usize = 26;
 const RES_RIGHT_ID_INV_COL: usize = 27;
@@ -114,12 +124,13 @@ const RES_RANGE_LIMB_BITS: usize = 16;
 const RES_RANGE_LIMBS: usize = 2;
 const RES_RANGE_TABLE_SIZE: usize = 1 << RES_RANGE_LIMB_BITS;
 const RES_RANGE_LIMB_BASE: u32 = 1 << RES_RANGE_LIMB_BITS;
-const RES_LITERAL_AUX_WIDTH: usize = RES_RANGE_LIMBS + 2;
+const RES_LITERAL_AUX_WIDTH: usize = 2;
 
 #[derive(Debug, Clone)]
 struct ResolutionLookupAir {
     formula: crate::backend::cnf::CnfFormula,
     max_width: usize,
+    commitment: Option<FormulaCommitment>,
     height: usize,
     num_lookups: usize,
 }
@@ -184,7 +195,7 @@ where
     }
 
     fn max_constraint_degree(&self) -> Option<usize> {
-        Some(4)
+        Some(SAT_MAX_CONSTRAINT_DEGREE)
     }
 }
 
@@ -278,11 +289,15 @@ where
     }
 
     fn max_constraint_degree(&self) -> Option<usize> {
-        Some(64)
+        Some(RESOLUTION_MAX_CONSTRAINT_DEGREE)
     }
 
     fn num_public_values(&self) -> usize {
-        UNSAT_PUBLIC_VALUES
+        if self.commitment.is_some() {
+            UNSAT_COMMITTED_PUBLIC_VALUES
+        } else {
+            UNSAT_PUBLIC_VALUES
+        }
     }
 }
 
@@ -301,8 +316,12 @@ where
             .map(|index| main.next(index).unwrap())
             .collect::<Vec<_>>();
 
-        let formula_active = preprocessed.current(RES_LOOKUP_PREP_FORMULA_ACTIVE_COL).unwrap();
-        let formula_id = preprocessed.current(RES_LOOKUP_PREP_FORMULA_ID_COL).unwrap();
+        let formula_active = preprocessed
+            .current(RES_LOOKUP_PREP_FORMULA_ACTIVE_COL)
+            .unwrap();
+        let formula_id = preprocessed
+            .current(RES_LOOKUP_PREP_FORMULA_ID_COL)
+            .unwrap();
         let formula_clause = (0..self.max_width)
             .map(|slot| {
                 preprocessed
@@ -310,7 +329,9 @@ where
                     .unwrap()
             })
             .collect::<Vec<_>>();
-        let next_formula_active = preprocessed.next(RES_LOOKUP_PREP_FORMULA_ACTIVE_COL).unwrap();
+        let next_formula_active = preprocessed
+            .next(RES_LOOKUP_PREP_FORMULA_ACTIVE_COL)
+            .unwrap();
         let next_formula_id = preprocessed.next(RES_LOOKUP_PREP_FORMULA_ID_COL).unwrap();
         let range_active = preprocessed
             .current(res_lookup_prep_range_active_col(self.max_width))
@@ -325,6 +346,8 @@ where
         let right_id = current[RES_RIGHT_ID_COL].clone();
         let pivot = current[RES_PIVOT_COL].clone();
         let pivot_inv = current[RES_PIVOT_INV_COL].clone();
+        let commit_acc_a = current[RES_COMMIT_ACC_A_COL].clone();
+        let commit_acc_b = current[RES_COMMIT_ACC_B_COL].clone();
         let clause_mult = current[RES_CLAUSE_MULT_COL].clone();
         let left_id_inv = current[RES_LEFT_ID_INV_COL].clone();
         let right_id_inv = current[RES_RIGHT_ID_INV_COL].clone();
@@ -334,6 +357,8 @@ where
         let next_is_semantic = next[RES_IS_SEMANTIC_COL].clone();
         let next_is_derived = next[RES_IS_DERIVED_COL].clone();
         let next_entry_id = next[RES_ENTRY_ID_COL].clone();
+        let next_commit_acc_a = next[RES_COMMIT_ACC_A_COL].clone();
+        let next_commit_acc_b = next[RES_COMMIT_ACC_B_COL].clone();
 
         let public_num_vars: AB::Expr = builder.public_values()[0].into();
         let public_num_clauses: AB::Expr = builder.public_values()[1].into();
@@ -363,7 +388,9 @@ where
         builder.assert_bool(formula_active.clone());
         builder.assert_bool(range_active.clone());
         builder.assert_zero(is_query.clone());
-        builder.assert_zero((one.clone() - AB::Expr::from(range_active.clone())) * range_table_mult.clone());
+        builder.assert_zero(
+            (one.clone() - AB::Expr::from(range_active.clone())) * range_table_mult.clone(),
+        );
         builder.assert_zero(is_derived.clone() * (one.clone() - is_semantic.clone()));
         builder.assert_zero(
             is_semantic.clone()
@@ -396,11 +423,13 @@ where
         builder.assert_zero(
             AB::Expr::from(formula_active.clone()) * (entry_id.clone() - formula_id.clone()),
         );
-        for (clause_lit, formula_lit) in current_clause.iter().zip(formula_clause.iter()) {
-            builder.assert_zero(
-                AB::Expr::from(formula_active.clone())
-                    * (clause_lit.clone() - AB::Expr::from(formula_lit.clone())),
-            );
+        if self.commitment.is_none() {
+            for (clause_lit, formula_lit) in current_clause.iter().zip(formula_clause.iter()) {
+                builder.assert_zero(
+                    AB::Expr::from(formula_active.clone())
+                        * (clause_lit.clone() - AB::Expr::from(formula_lit.clone())),
+                );
+            }
         }
 
         builder.assert_zero((one.clone() - is_derived.clone()) * pivot.clone());
@@ -422,7 +451,8 @@ where
         builder.assert_zero(is_derived.clone() * (pivot.clone() * pivot_inv - one.clone()));
         builder.assert_zero(
             is_derived.clone()
-                * (pivot.clone() + limbs_to_expr::<AB>(&pivot_delta_limbs) - public_num_vars.clone()),
+                * (pivot.clone() + limbs_to_expr::<AB>(&pivot_delta_limbs)
+                    - public_num_vars.clone()),
         );
 
         let left_gap = limbs_to_expr::<AB>(&left_gap_limbs);
@@ -468,44 +498,29 @@ where
 
             let current_is_zero = current[current_aux_base].clone();
             let current_inv = current[current_aux_base + 1].clone();
-            let current_delta_limbs = (0..RES_RANGE_LIMBS)
-                .map(|limb| current[current_aux_base + 2 + limb].clone())
-                .collect::<Vec<_>>();
-            constrain_resolution_literal_range::<AB>(
+            constrain_resolution_literal_zero::<AB>(
                 builder,
                 res.clone(),
                 current_is_zero.clone(),
                 current_inv,
-                &current_delta_limbs,
-                public_num_vars.clone(),
             );
 
             let left_is_zero = current[left_aux_base].clone();
             let left_inv = current[left_aux_base + 1].clone();
-            let left_delta_limbs = (0..RES_RANGE_LIMBS)
-                .map(|limb| current[left_aux_base + 2 + limb].clone())
-                .collect::<Vec<_>>();
-            constrain_resolution_literal_range::<AB>(
+            constrain_resolution_literal_zero::<AB>(
                 builder,
                 left.clone(),
                 left_is_zero.clone(),
                 left_inv,
-                &left_delta_limbs,
-                public_num_vars.clone(),
             );
 
             let right_is_zero = current[right_aux_base].clone();
             let right_inv = current[right_aux_base + 1].clone();
-            let right_delta_limbs = (0..RES_RANGE_LIMBS)
-                .map(|limb| current[right_aux_base + 2 + limb].clone())
-                .collect::<Vec<_>>();
-            constrain_resolution_literal_range::<AB>(
+            constrain_resolution_literal_zero::<AB>(
                 builder,
                 right.clone(),
                 right_is_zero.clone(),
                 right_inv,
-                &right_delta_limbs,
-                public_num_vars.clone(),
             );
 
             let left_pivot_flag = current[res_left_pivot_eq_base(self.max_width) + i].clone();
@@ -587,6 +602,57 @@ where
                 .push(current[res_right_selected_prod_a_base(self.max_width) + i].clone());
             right_selected_prod_b
                 .push(current[res_right_selected_prod_b_base(self.max_width) + i].clone());
+        }
+
+        if let Some(commitment) = &self.commitment {
+            let public_mix_a: AB::Expr = builder.public_values()[3].into();
+            let public_mix_b: AB::Expr = builder.public_values()[4].into();
+            let commitment_width = commitment.max_clause_width as usize;
+
+            builder.when_first_row().assert_zero(commit_acc_a.clone());
+            builder.when_first_row().assert_zero(commit_acc_b.clone());
+
+            let mut clause_len = AB::Expr::ZERO;
+            let mut clause_mix_a = entry_id.clone() * AB::F::from_u64(COMMIT_INDEX_SCALE_A);
+            let mut clause_mix_b = entry_id.clone() * AB::F::from_u64(COMMIT_INDEX_SCALE_B);
+
+            for i in 0..self.max_width {
+                if i < commitment_width {
+                    let is_nonzero = one.clone() - res_zero_flags[i].clone();
+                    clause_len = clause_len + is_nonzero;
+                    let weight_a = AB::F::from_u64(((i + 1) as u64) * COMMIT_SLOT_SCALE_A);
+                    let weight_b = AB::F::from_u64(((i + 1) as u64) * COMMIT_SLOT_SCALE_B);
+                    clause_mix_a = clause_mix_a + current_clause[i].clone() * weight_a;
+                    clause_mix_b = clause_mix_b + current_clause[i].clone() * weight_b;
+                } else {
+                    builder.assert_zero(
+                        AB::Expr::from(formula_active.clone()) * current_clause[i].clone(),
+                    );
+                }
+            }
+
+            clause_mix_a = clause_mix_a + clause_len.clone() * AB::F::from_u64(COMMIT_LEN_SCALE_A);
+            clause_mix_b = clause_mix_b + clause_len * AB::F::from_u64(COMMIT_LEN_SCALE_B);
+
+            builder.when_transition().assert_zero(
+                AB::Expr::from(formula_active.clone())
+                    * (next_commit_acc_a.clone()
+                        - (commit_acc_a * AB::F::from_u64(COMMIT_ROOT_ALPHA_A) + clause_mix_a)),
+            );
+            builder.when_transition().assert_zero(
+                AB::Expr::from(formula_active.clone())
+                    * (next_commit_acc_b.clone()
+                        - (commit_acc_b * AB::F::from_u64(COMMIT_ROOT_ALPHA_B) + clause_mix_b)),
+            );
+
+            let formula_end =
+                AB::Expr::from(formula_active.clone()) * (one.clone() - next_formula_active);
+            builder
+                .when_transition()
+                .assert_zero(formula_end.clone() * (next_commit_acc_a - public_mix_a));
+            builder
+                .when_transition()
+                .assert_zero(formula_end * (next_commit_acc_b - public_mix_b));
         }
 
         let gamma_a: AB::Expr = AB::F::from_u64(RES_FP_GAMMA_A as u64).into();
@@ -806,7 +872,11 @@ impl LookupAir<Val> for ResolutionLookupAir {
         let symbolic_builder = SymbolicAirBuilder::<Val, Challenge>::new(AirLayout {
             preprocessed_width: self.max_width + 4,
             main_width: resolution_trace_width(self.max_width),
-            num_public_values: UNSAT_PUBLIC_VALUES,
+            num_public_values: if self.commitment.is_some() {
+                UNSAT_COMMITTED_PUBLIC_VALUES
+            } else {
+                UNSAT_PUBLIC_VALUES
+            },
             ..Default::default()
         });
 
@@ -818,12 +888,18 @@ impl LookupAir<Val> for ResolutionLookupAir {
         let formula_active: SymbolicExpression<Val> =
             prep_row[RES_LOOKUP_PREP_FORMULA_ACTIVE_COL].into();
         let clause_mult: SymbolicExpression<Val> = main_row[RES_CLAUSE_MULT_COL].into();
-        let formula_values = std::iter::once(prep_row[RES_LOOKUP_PREP_FORMULA_ID_COL].into())
-            .chain(
-                (0..self.max_width)
-                    .map(|slot| prep_row[RES_LOOKUP_PREP_FORMULA_LIT_BASE + slot].into()),
-            )
-            .collect::<Vec<SymbolicExpression<Val>>>();
+        let formula_values = if self.commitment.is_some() {
+            std::iter::once(main_row[RES_ENTRY_ID_COL].into())
+                .chain((0..self.max_width).map(|slot| main_row[RES_HEADER_WIDTH + slot].into()))
+                .collect::<Vec<SymbolicExpression<Val>>>()
+        } else {
+            std::iter::once(prep_row[RES_LOOKUP_PREP_FORMULA_ID_COL].into())
+                .chain(
+                    (0..self.max_width)
+                        .map(|slot| prep_row[RES_LOOKUP_PREP_FORMULA_LIT_BASE + slot].into()),
+                )
+                .collect::<Vec<SymbolicExpression<Val>>>()
+        };
 
         let derived_active: SymbolicExpression<Val> = main_row[RES_IS_DERIVED_COL].into();
         let derived_values = std::iter::once(main_row[RES_ENTRY_ID_COL].into())
@@ -861,7 +937,6 @@ impl LookupAir<Val> for ResolutionLookupAir {
         let range_value: SymbolicExpression<Val> =
             prep_row[res_lookup_prep_range_value_col(self.max_width)].into();
         let range_mult: SymbolicExpression<Val> = main_row[RES_IS_TABLE_COL].into();
-        let one = SymbolicExpression::ONE;
 
         let mut range_interactions = vec![SymbolicInteraction {
             values: vec![range_value],
@@ -900,47 +975,6 @@ impl LookupAir<Val> for ResolutionLookupAir {
                 direction: Direction::Receive,
             },
         ]);
-        for slot in 0..self.max_width {
-            let current_aux_base = res_literal_aux_base(self.max_width, 0, slot);
-            let left_aux_base = res_literal_aux_base(self.max_width, 1, slot);
-            let right_aux_base = res_literal_aux_base(self.max_width, 2, slot);
-            let semantic_mult: SymbolicExpression<Val> = main_row[RES_IS_SEMANTIC_COL].into();
-            let derived_mult: SymbolicExpression<Val> = main_row[RES_IS_DERIVED_COL].into();
-            let current_non_zero = one.clone() - SymbolicExpression::from(main_row[current_aux_base]);
-            let left_non_zero = one.clone() - SymbolicExpression::from(main_row[left_aux_base]);
-            let right_non_zero = one.clone() - SymbolicExpression::from(main_row[right_aux_base]);
-            range_interactions.push(SymbolicInteraction {
-                values: vec![main_row[current_aux_base + 2].into()],
-                multiplicity: semantic_mult.clone() * current_non_zero.clone(),
-                direction: Direction::Receive,
-            });
-            range_interactions.push(SymbolicInteraction {
-                values: vec![main_row[current_aux_base + 3].into()],
-                multiplicity: semantic_mult * current_non_zero,
-                direction: Direction::Receive,
-            });
-            range_interactions.push(SymbolicInteraction {
-                values: vec![main_row[left_aux_base + 2].into()],
-                multiplicity: derived_mult.clone() * left_non_zero.clone(),
-                direction: Direction::Receive,
-            });
-            range_interactions.push(SymbolicInteraction {
-                values: vec![main_row[left_aux_base + 3].into()],
-                multiplicity: derived_mult.clone() * left_non_zero,
-                direction: Direction::Receive,
-            });
-            range_interactions.push(SymbolicInteraction {
-                values: vec![main_row[right_aux_base + 2].into()],
-                multiplicity: derived_mult.clone() * right_non_zero.clone(),
-                direction: Direction::Receive,
-            });
-            range_interactions.push(SymbolicInteraction {
-                values: vec![main_row[right_aux_base + 3].into()],
-                multiplicity: derived_mult * right_non_zero,
-                direction: Direction::Receive,
-            });
-        }
-
         vec![
             register_send_receive_bus(self, RES_LOOKUP_BUS.to_owned(), &clause_interactions),
             register_send_receive_bus(self, RES_RANGE_BUS.to_owned(), &range_interactions),
@@ -991,6 +1025,12 @@ pub fn prove_unsat(
     prove_unsat_with_lookup(instance)
 }
 
+pub fn prove_unsat_committed(
+    instance: &ValidatedResolutionInstance,
+) -> Result<Plonky3ResolutionProof, Plonky3BackendError> {
+    prove_unsat_with_committed_lookup(instance)
+}
+
 pub fn verify_unsat(
     statement: &UnsatPublicStatement,
     proof: &Plonky3ResolutionProof,
@@ -998,9 +1038,66 @@ pub fn verify_unsat(
     verify_unsat_with_lookup(statement, proof)
 }
 
+pub fn verify_unsat_committed(
+    statement: &CommittedUnsatPublicStatement,
+    proof: &Plonky3ResolutionProof,
+) -> Result<(), Plonky3BackendError> {
+    verify_unsat_with_committed_lookup(statement, proof)
+}
+
 fn prove_unsat_with_lookup(
     instance: &ValidatedResolutionInstance,
 ) -> Result<Plonky3ResolutionProof, Plonky3BackendError> {
+    validate_resolution_shape(instance)?;
+    let statement = instance.public_statement();
+    let trace = resolution_lookup_trace::<Val>(instance, &statement);
+    let degree_bits = trace.height().ilog2() as usize;
+    let mut airs = vec![resolution_lookup_air(&statement, trace.height())];
+    let config = make_config();
+    let public_values = resolution_public_values(&statement);
+    let prover_data = ProverData::from_airs_and_degrees(&config, &mut airs, &[degree_bits]);
+    let common = &prover_data.common;
+    let trace_refs = vec![&trace];
+    let instances =
+        StarkInstance::new_multiple(&airs, &trace_refs, &[public_values.clone()], common);
+    let proof = catch_unwind(AssertUnwindSafe(|| {
+        prove_batch(&config, &instances, &prover_data)
+    }))
+    .map_err(panic_as_plonky3_error)?;
+    let result = Plonky3ResolutionProof { proof };
+    verify_unsat_with_lookup(&statement, &result)?;
+    Ok(result)
+}
+
+fn prove_unsat_with_committed_lookup(
+    instance: &ValidatedResolutionInstance,
+) -> Result<Plonky3ResolutionProof, Plonky3BackendError> {
+    validate_resolution_shape(instance)?;
+    let statement = instance.committed_public_statement();
+    validate_committed_statement(&statement)?;
+    let trace_statement = instance.public_statement();
+    let trace = resolution_lookup_trace::<Val>(instance, &trace_statement);
+    let degree_bits = trace.height().ilog2() as usize;
+    let mut airs = vec![resolution_lookup_air_committed(&statement, trace.height())];
+    let config = make_config();
+    let public_values = resolution_committed_public_values(&statement);
+    let prover_data = ProverData::from_airs_and_degrees(&config, &mut airs, &[degree_bits]);
+    let common = &prover_data.common;
+    let trace_refs = vec![&trace];
+    let instances =
+        StarkInstance::new_multiple(&airs, &trace_refs, &[public_values.clone()], common);
+    let proof = catch_unwind(AssertUnwindSafe(|| {
+        prove_batch(&config, &instances, &prover_data)
+    }))
+    .map_err(panic_as_plonky3_error)?;
+    let result = Plonky3ResolutionProof { proof };
+    verify_unsat_with_committed_lookup(&statement, &result)?;
+    Ok(result)
+}
+
+fn validate_resolution_shape(
+    instance: &ValidatedResolutionInstance,
+) -> Result<(), Plonky3BackendError> {
     if instance.commitment.num_vars >= (1u32 << RES_RANGE_BITS) {
         return Err(Plonky3BackendError::InvalidPublicStatement(format!(
             "num_vars {} exceeds plonky3 range-check limit {}",
@@ -1020,24 +1117,7 @@ fn prove_unsat_with_lookup(
             (1usize << RES_RANGE_BITS) - 1
         )));
     }
-    let statement = instance.public_statement();
-    let trace = resolution_lookup_trace::<Val>(instance, &statement);
-    let degree_bits = trace.height().ilog2() as usize;
-    let mut airs = vec![resolution_lookup_air(&statement, trace.height())];
-    let config = make_config();
-    let public_values = resolution_public_values(&statement);
-    let prover_data = ProverData::from_airs_and_degrees(&config, &mut airs, &[degree_bits]);
-    let common = &prover_data.common;
-    let trace_refs = vec![&trace];
-    let instances =
-        StarkInstance::new_multiple(&airs, &trace_refs, &[public_values.clone()], common);
-    let proof = catch_unwind(AssertUnwindSafe(|| {
-        prove_batch(&config, &instances, &prover_data)
-    }))
-    .map_err(panic_as_plonky3_error)?;
-    let result = Plonky3ResolutionProof { proof };
-    verify_unsat_with_lookup(&statement, &result)?;
-    Ok(result)
+    Ok(())
 }
 
 fn verify_unsat_with_lookup(
@@ -1060,10 +1140,48 @@ fn verify_unsat_with_lookup(
     Ok(())
 }
 
+fn verify_unsat_with_committed_lookup(
+    statement: &CommittedUnsatPublicStatement,
+    proof: &Plonky3ResolutionProof,
+) -> Result<(), Plonky3BackendError> {
+    validate_committed_statement(statement)?;
+    let Some(&degree_bits) = proof.proof.degree_bits.first() else {
+        return Err(Plonky3BackendError::Verification(Box::new(
+            "missing degree bits for resolution proof".to_owned(),
+        )));
+    };
+    let height = 1usize << degree_bits;
+    let mut airs = vec![resolution_lookup_air_committed(statement, height)];
+    let config = make_config();
+    let public_values = vec![resolution_committed_public_values(statement)];
+    let prover_data = ProverData::from_airs_and_degrees(&config, &mut airs, &[degree_bits]);
+    let common = &prover_data.common;
+    verify_batch(&config, &airs, &proof.proof, &public_values, common)
+        .map_err(|err| Plonky3BackendError::Verification(Box::new(err)))?;
+    Ok(())
+}
+
 fn resolution_lookup_air(statement: &UnsatPublicStatement, height: usize) -> ResolutionLookupAir {
     ResolutionLookupAir {
-        formula: statement.formula.clone(),
+        formula: normalize_resolution_air_formula(&statement.formula),
         max_width: statement.max_clause_width.max(1) as usize,
+        commitment: None,
+        height,
+        num_lookups: 0,
+    }
+}
+
+fn resolution_lookup_air_committed(
+    statement: &CommittedUnsatPublicStatement,
+    height: usize,
+) -> ResolutionLookupAir {
+    ResolutionLookupAir {
+        formula: crate::backend::cnf::CnfFormula {
+            num_vars: statement.commitment.num_vars,
+            clauses: vec![Vec::new(); statement.commitment.num_clauses as usize],
+        },
+        max_width: statement.air_max_clause_width.max(1) as usize,
+        commitment: Some(statement.commitment.clone()),
         height,
         num_lookups: 0,
     }
@@ -1083,6 +1201,28 @@ fn resolution_public_values(statement: &UnsatPublicStatement) -> Vec<Val> {
     ]
 }
 
+fn resolution_committed_public_values(statement: &CommittedUnsatPublicStatement) -> Vec<Val> {
+    vec![
+        Val::from_u64(statement.commitment.num_vars as u64),
+        Val::from_u64(statement.commitment.num_clauses as u64),
+        Val::from_u64(statement.air_max_clause_width as u64),
+        Val::from_u64(statement.commitment.mix_a as u64),
+        Val::from_u64(statement.commitment.mix_b as u64),
+    ]
+}
+
+fn validate_committed_statement(
+    statement: &CommittedUnsatPublicStatement,
+) -> Result<(), Plonky3BackendError> {
+    if statement.commitment.max_clause_width > statement.air_max_clause_width {
+        return Err(Plonky3BackendError::InvalidPublicStatement(format!(
+            "commitment width {} exceeds AIR width {}",
+            statement.commitment.max_clause_width, statement.air_max_clause_width
+        )));
+    }
+    Ok(())
+}
+
 fn panic_as_plonky3_error(payload: Box<dyn std::any::Any + Send>) -> Plonky3BackendError {
     let message = if let Some(message) = payload.downcast_ref::<&'static str>() {
         (*message).to_owned()
@@ -1096,6 +1236,26 @@ fn panic_as_plonky3_error(payload: Box<dyn std::any::Any + Send>) -> Plonky3Back
 
 fn resolution_clause_exprs<E: Clone>(row: &[E], base: usize, width: usize) -> Vec<E> {
     (0..width).map(|slot| row[base + slot].clone()).collect()
+}
+
+fn normalize_resolution_air_formula(
+    formula: &crate::backend::cnf::CnfFormula,
+) -> crate::backend::cnf::CnfFormula {
+    crate::backend::cnf::CnfFormula {
+        num_vars: formula.num_vars,
+        clauses: formula
+            .clauses
+            .iter()
+            .map(|clause| normalize_resolution_air_clause(clause))
+            .collect(),
+    }
+}
+
+fn normalize_resolution_air_clause(clause: &[i32]) -> Vec<i32> {
+    let mut normalized = clause.to_vec();
+    normalized.sort_unstable();
+    normalized.dedup();
+    normalized
 }
 
 fn resolution_trace_width(max_width: usize) -> usize {
@@ -1229,13 +1389,11 @@ where
         })
 }
 
-fn constrain_resolution_literal_range<AB: AirBuilder>(
+fn constrain_resolution_literal_zero<AB: AirBuilder>(
     builder: &mut AB,
     lit: AB::Var,
     is_zero: AB::Var,
     inv: AB::Var,
-    delta_limbs: &[AB::Var],
-    public_num_vars: AB::Expr,
 ) where
     AB::F: PrimeCharacteristicRing + Send + Sync,
 {
@@ -1245,25 +1403,18 @@ fn constrain_resolution_literal_range<AB: AirBuilder>(
     let lit_expr: AB::Expr = lit.into();
     let is_zero_expr: AB::Expr = is_zero.into();
     let inv_expr: AB::Expr = inv.into();
-    let delta_expr = limbs_to_expr::<AB>(delta_limbs);
-    let abs_expr = public_num_vars - delta_expr;
 
     builder.assert_zero(is_zero_expr.clone() * lit_expr.clone());
-    builder.assert_zero(is_zero_expr.clone() * abs_expr.clone());
     builder.assert_zero(
         (one.clone() - is_zero_expr.clone()) * (lit_expr.clone() * inv_expr - one.clone()),
     );
-    builder.assert_zero(
-        (one - is_zero_expr) * (lit_expr.clone() - abs_expr.clone()) * (lit_expr + abs_expr),
-    );
 }
 
-fn write_literal_range_witness<F: Field + PrimeCharacteristicRing>(
+fn write_literal_zero_witness<F: Field + PrimeCharacteristicRing>(
     values: &mut [F],
     row_base: usize,
     aux_base: usize,
     lit: i32,
-    num_vars: u32,
 ) {
     let is_zero = lit == 0;
     values[row_base + aux_base] = F::from_bool(is_zero);
@@ -1272,15 +1423,6 @@ fn write_literal_range_witness<F: Field + PrimeCharacteristicRing>(
     } else {
         encode_signed_lit::<F>(lit).inverse()
     };
-
-    let delta = if is_zero {
-        num_vars
-    } else {
-        num_vars.saturating_sub(lit.unsigned_abs())
-    };
-    for (limb_index, limb) in split_u32_to_limbs(delta).into_iter().enumerate() {
-        values[row_base + aux_base + 2 + limb_index] = F::from_u64(limb as u64);
-    }
 }
 
 fn write_u32_limbs<F: Field + PrimeCharacteristicRing>(
@@ -1307,7 +1449,6 @@ fn write_resolution_semantic_witness<F: Field + PrimeCharacteristicRing>(
     values: &mut [F],
     row_base: usize,
     max_width: usize,
-    num_vars: u32,
     pivot_var: u32,
     resolvent: &[i32],
     left_clause: &[i32],
@@ -1433,12 +1574,11 @@ fn write_resolution_semantic_witness<F: Field + PrimeCharacteristicRing>(
                 1 => left_clause.get(slot).copied().unwrap_or(0),
                 _ => right_clause.get(slot).copied().unwrap_or(0),
             };
-            write_literal_range_witness(
+            write_literal_zero_witness(
                 values,
                 row_base,
                 res_literal_aux_base(max_width, clause_block, slot),
                 lit,
-                num_vars,
             );
         }
     }
@@ -1631,6 +1771,7 @@ fn resolution_lookup_trace<F: Field + PrimeCharacteristicRing + Send + Sync>(
     statement: &UnsatPublicStatement,
 ) -> RowMajorMatrix<F> {
     let max_width = statement.max_clause_width.max(1) as usize;
+    let air_formula = normalize_resolution_air_formula(&statement.formula);
     let width = resolution_trace_width(max_width);
     let formula_rows = instance.formula.clauses.len();
     let step_count = instance
@@ -1639,7 +1780,8 @@ fn resolution_lookup_trace<F: Field + PrimeCharacteristicRing + Send + Sync>(
         .len()
         .max(instance.expanded_steps.len());
     let real_rows = formula_rows + step_count;
-    let height = padded_height((real_rows + 1).max(RES_RANGE_TABLE_SIZE));
+    let range_rows = resolution_range_table_rows(instance, statement);
+    let height = padded_height((real_rows + 1).max(range_rows));
     let mut values = vec![F::ZERO; height * width];
     let mut parent_use_counts = vec![0u32; real_rows + 1];
     let mut range_use_counts = vec![0u32; RES_RANGE_TABLE_SIZE];
@@ -1657,33 +1799,46 @@ fn resolution_lookup_trace<F: Field + PrimeCharacteristicRing + Send + Sync>(
         let base = row_index * width;
         for clause_block in 0..3 {
             for slot in 0..max_width {
-                write_literal_range_witness(
+                write_literal_zero_witness(
                     &mut values,
                     base,
                     res_literal_aux_base(max_width, clause_block, slot),
                     0,
-                    statement.num_vars,
                 );
             }
         }
     }
 
-    for (row_index, clause) in instance.formula.clauses.iter().enumerate() {
+    let mut commit_acc_a = F::ZERO;
+    let mut commit_acc_b = F::ZERO;
+    let commit_width = instance.commitment.max_clause_width as usize;
+
+    for (row_index, clause) in air_formula.clauses.iter().enumerate() {
         let base = row_index * width;
+        values[base + RES_COMMIT_ACC_A_COL] = commit_acc_a;
+        values[base + RES_COMMIT_ACC_B_COL] = commit_acc_b;
         values[base + RES_IS_SEMANTIC_COL] = F::ONE;
         values[base + RES_ENTRY_ID_COL] = F::from_u64((row_index + 1) as u64);
         values[base + RES_CLAUSE_MULT_COL] = F::from_u64(parent_use_counts[row_index + 1] as u64);
         for (slot, lit) in clause.iter().take(max_width).enumerate() {
             values[base + RES_HEADER_WIDTH + slot] = encode_signed_lit(*lit);
-            write_literal_range_witness(
+            write_literal_zero_witness(
                 &mut values,
                 base,
                 res_literal_aux_base(max_width, 0, slot),
                 *lit,
-                statement.num_vars,
             );
-            record_range_query(&mut range_use_counts, statement.num_vars.saturating_sub(lit.unsigned_abs()));
         }
+        let (clause_mix_a, clause_mix_b) =
+            formula_clause_commitment_mix::<F>((row_index + 1) as u64, clause, commit_width);
+        commit_acc_a = commit_acc_a * F::from_u64(COMMIT_ROOT_ALPHA_A) + clause_mix_a;
+        commit_acc_b = commit_acc_b * F::from_u64(COMMIT_ROOT_ALPHA_B) + clause_mix_b;
+    }
+
+    if formula_rows < height {
+        let base = formula_rows * width;
+        values[base + RES_COMMIT_ACC_A_COL] = commit_acc_a;
+        values[base + RES_COMMIT_ACC_B_COL] = commit_acc_b;
     }
 
     for step_index in 0..step_count {
@@ -1703,12 +1858,15 @@ fn resolution_lookup_trace<F: Field + PrimeCharacteristicRing + Send + Sync>(
         let clause = expanded_step
             .map(|step| step.resolvent.as_slice())
             .unwrap_or(&[]);
+        let clause = normalize_resolution_air_clause(clause);
         let left_clause = expanded_step
             .map(|step| step.left_clause.as_slice())
             .unwrap_or(&[]);
+        let left_clause = normalize_resolution_air_clause(left_clause);
         let right_clause = expanded_step
             .map(|step| step.right_clause.as_slice())
             .unwrap_or(&[]);
+        let right_clause = normalize_resolution_air_clause(right_clause);
 
         values[base + RES_IS_SEMANTIC_COL] = F::ONE;
         values[base + RES_IS_DERIVED_COL] = F::ONE;
@@ -1764,47 +1922,40 @@ fn resolution_lookup_trace<F: Field + PrimeCharacteristicRing + Send + Sync>(
 
         for (slot, lit) in clause.iter().take(max_width).enumerate() {
             values[base + RES_HEADER_WIDTH + slot] = encode_signed_lit(*lit);
-            write_literal_range_witness(
+            write_literal_zero_witness(
                 &mut values,
                 base,
                 res_literal_aux_base(max_width, 0, slot),
                 *lit,
-                statement.num_vars,
             );
-            record_range_query(&mut range_use_counts, statement.num_vars.saturating_sub(lit.unsigned_abs()));
         }
         for (slot, lit) in left_clause.iter().take(max_width).enumerate() {
             values[base + RES_HEADER_WIDTH + max_width + slot] = encode_signed_lit(*lit);
-            write_literal_range_witness(
+            write_literal_zero_witness(
                 &mut values,
                 base,
                 res_literal_aux_base(max_width, 1, slot),
                 *lit,
-                statement.num_vars,
             );
-            record_range_query(&mut range_use_counts, statement.num_vars.saturating_sub(lit.unsigned_abs()));
         }
         for (slot, lit) in right_clause.iter().take(max_width).enumerate() {
             values[base + RES_HEADER_WIDTH + max_width * 2 + slot] = encode_signed_lit(*lit);
-            write_literal_range_witness(
+            write_literal_zero_witness(
                 &mut values,
                 base,
                 res_literal_aux_base(max_width, 2, slot),
                 *lit,
-                statement.num_vars,
             );
-            record_range_query(&mut range_use_counts, statement.num_vars.saturating_sub(lit.unsigned_abs()));
         }
 
         write_resolution_semantic_witness(
             &mut values,
             base,
             max_width,
-            statement.num_vars,
             pivot_var,
-            clause,
-            left_clause,
-            right_clause,
+            &clause,
+            &left_clause,
+            &right_clause,
         );
     }
 
@@ -1816,6 +1967,26 @@ fn resolution_lookup_trace<F: Field + PrimeCharacteristicRing + Send + Sync>(
     }
 
     RowMajorMatrix::new(values, width)
+}
+
+fn formula_clause_commitment_mix<F: PrimeCharacteristicRing>(
+    clause_index: u64,
+    clause: &[i32],
+    commitment_width: usize,
+) -> (F, F) {
+    let mut mix_a = F::from_u64(clause_index) * F::from_u64(COMMIT_INDEX_SCALE_A)
+        + F::from_u64(clause.len() as u64) * F::from_u64(COMMIT_LEN_SCALE_A);
+    let mut mix_b = F::from_u64(clause_index) * F::from_u64(COMMIT_INDEX_SCALE_B)
+        + F::from_u64(clause.len() as u64) * F::from_u64(COMMIT_LEN_SCALE_B);
+
+    for position in 0..commitment_width {
+        let lit = clause.get(position).copied().unwrap_or(0);
+        let lit_value = F::from_u64(commitment_literal_value(lit));
+        mix_a += lit_value.clone() * F::from_u64((position as u64 + 1) * COMMIT_SLOT_SCALE_A);
+        mix_b += lit_value * F::from_u64((position as u64 + 1) * COMMIT_SLOT_SCALE_B);
+    }
+
+    (mix_a, mix_b)
 }
 
 fn encode_signed_lit<F: PrimeCharacteristicRing>(lit: i32) -> F {
@@ -1842,10 +2013,10 @@ fn make_config() -> MyConfig {
     let challenge_mmcs = ChallengeMmcs::new(val_mmcs.clone());
     let dft = Dft::default();
     let fri_params = FriParameters {
-        log_blowup: FRI_LOG_BLOWUP,
+        log_blowup: plonky3_env_usize("ZK_PROVER_FRI_LOG_BLOWUP", FRI_LOG_BLOWUP),
         log_final_poly_len: 0,
         max_log_arity: FRI_MAX_LOG_ARITY,
-        num_queries: FRI_NUM_QUERIES,
+        num_queries: plonky3_env_usize("ZK_PROVER_FRI_NUM_QUERIES", FRI_NUM_QUERIES),
         commit_proof_of_work_bits: FRI_COMMIT_POW_BITS,
         query_proof_of_work_bits: FRI_QUERY_POW_BITS,
         mmcs: challenge_mmcs,
@@ -1853,6 +2024,54 @@ fn make_config() -> MyConfig {
     let pcs = Pcs::new(dft, val_mmcs, fri_params);
     let challenger = Challenger::new(perm);
     MyConfig::new(pcs, challenger)
+}
+
+fn plonky3_env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(default)
+}
+
+fn resolution_range_table_rows(
+    instance: &ValidatedResolutionInstance,
+    statement: &UnsatPublicStatement,
+) -> usize {
+    let formula_rows = instance.formula.clauses.len();
+    let step_count = instance
+        .proof
+        .steps
+        .len()
+        .max(instance.expanded_steps.len());
+    let mut max_limb = 0u32;
+
+    let mut observe = |value: u32| {
+        for limb in split_u32_to_limbs(value) {
+            max_limb = max_limb.max(limb);
+        }
+    };
+
+    for step_index in 0..step_count {
+        let proof_step = instance.proof.steps.get(step_index);
+        let pivot_var = proof_step
+            .map(|step| step.pivot_var)
+            .or_else(|| {
+                instance
+                    .expanded_steps
+                    .get(step_index)
+                    .map(|step| step.pivot_var)
+            })
+            .unwrap_or(0);
+        let left_parent = proof_step.map(|step| step.left_parent).unwrap_or(0);
+        let right_parent = proof_step.map(|step| step.right_parent).unwrap_or(0);
+        let clause_id = (formula_rows + step_index + 1) as u32;
+
+        observe(statement.num_vars.saturating_sub(pivot_var));
+        observe(clause_id.saturating_sub(left_parent));
+        observe(clause_id.saturating_sub(right_parent));
+    }
+
+    (max_limb as usize + 1).min(RES_RANGE_TABLE_SIZE).max(1)
 }
 
 #[cfg(test)]
@@ -1864,7 +2083,29 @@ mod tests {
         ValidatedResolutionInstance,
     };
 
+    use p3_air::symbolic::get_max_constraint_degree_extension;
+    use p3_batch_stark::symbolic as batch_symbolic;
+    use p3_lookup::logup::LogUpGadget;
+    use p3_lookup::lookup_traits::LookupGadget;
+
     use super::*;
+
+    fn sat_symbolic_layout() -> AirLayout {
+        AirLayout {
+            preprocessed_width: SAT_PREP_WIDTH,
+            main_width: SAT_MAIN_WIDTH,
+            ..Default::default()
+        }
+    }
+
+    fn resolution_symbolic_layout(max_width: usize) -> AirLayout {
+        AirLayout {
+            preprocessed_width: max_width + 4,
+            main_width: resolution_trace_width(max_width),
+            num_public_values: UNSAT_PUBLIC_VALUES,
+            ..Default::default()
+        }
+    }
 
     fn synthetic_resolution_instance(num_vars: usize) -> ValidatedResolutionInstance {
         let mut clauses = vec![(1..=num_vars as i32).map(|var| -var).collect::<Vec<_>>()];
@@ -1893,6 +2134,50 @@ mod tests {
     }
 
     #[test]
+    fn max_constraint_degree_hints_match_symbolic_evaluation() {
+        let sat = SatAir { rows: Vec::new() };
+        let sat_degree =
+            get_max_constraint_degree_extension::<Val, Challenge, _>(&sat, sat_symbolic_layout());
+        assert_eq!(sat_degree, SAT_MAX_CONSTRAINT_DEGREE);
+
+        let formula = CnfFormula {
+            num_vars: 2,
+            clauses: vec![vec![1, 2], vec![-1]],
+        };
+        let statement = UnsatPublicStatement {
+            formula,
+            num_vars: 2,
+            num_clauses: 2,
+            max_clause_width: 2,
+        };
+        let max_width = statement.max_clause_width as usize;
+        let mut resolution = resolution_lookup_air(&statement, 8);
+        let lookups = resolution.get_lookups();
+        let resolution_core_degree = get_max_constraint_degree_extension::<Val, Challenge, _>(
+            &resolution,
+            resolution_symbolic_layout(max_width),
+        );
+        assert_eq!(resolution_core_degree, 6);
+
+        let lookup_gadget = LogUpGadget::new();
+        let lookup_degree = lookups
+            .iter()
+            .map(|lookup| lookup_gadget.constraint_degree(lookup))
+            .max()
+            .unwrap_or(0);
+        assert_eq!(lookup_degree, 8);
+
+        let resolution_degree =
+            batch_symbolic::get_max_constraint_degree::<Val, Challenge, _, LogUpGadget>(
+                &resolution,
+                resolution_symbolic_layout(max_width),
+                &lookups,
+                &lookup_gadget,
+            );
+        assert_eq!(resolution_degree, RESOLUTION_MAX_CONSTRAINT_DEGREE);
+    }
+
+    #[test]
     fn proves_sat_assignment_rows() {
         let formula = CnfFormula {
             num_vars: 2,
@@ -1916,8 +2201,69 @@ mod tests {
     }
 
     #[test]
+    fn proves_resolution_rows_with_private_formula_commitment() {
+        let formula = CnfFormula {
+            num_vars: 1,
+            clauses: vec![vec![1], vec![-1]],
+        };
+        let proof = generate_resolution_proof_by_closure(&formula, 8).unwrap();
+        let instance = validate_resolution_instance(&formula, proof).unwrap();
+        let proof = prove_unsat_committed(&instance).unwrap();
+        verify_unsat_committed(&instance.committed_public_statement(), &proof).unwrap();
+    }
+
+    #[test]
+    fn rejects_tampered_committed_formula_root_at_verification() {
+        let formula = CnfFormula {
+            num_vars: 1,
+            clauses: vec![vec![1], vec![-1]],
+        };
+        let proof = generate_resolution_proof_by_closure(&formula, 8).unwrap();
+        let instance = validate_resolution_instance(&formula, proof).unwrap();
+        let proof = prove_unsat_committed(&instance).unwrap();
+        let mut statement = instance.committed_public_statement();
+        statement.commitment.mix_a = statement.commitment.mix_a.wrapping_add(1);
+
+        assert!(matches!(
+            verify_unsat_committed(&statement, &proof),
+            Err(Plonky3BackendError::Verification(_))
+        ));
+    }
+
+    #[test]
     fn proves_multi_step_resolution_rows() {
         let instance = synthetic_resolution_instance(2);
+        let proof = prove_unsat(&instance).unwrap();
+        verify_unsat(&instance.public_statement(), &proof).unwrap();
+    }
+
+    #[test]
+    fn proves_resolution_with_duplicate_non_pivot_literals() {
+        let formula = CnfFormula {
+            num_vars: 2,
+            clauses: vec![vec![1, 1, 2], vec![-2], vec![-1]],
+        };
+        let instance = validate_resolution_instance(
+            &formula,
+            ResolutionProof {
+                steps: vec![
+                    ResolutionStep {
+                        left_parent: 1,
+                        right_parent: 2,
+                        pivot_var: 2,
+                        resolvent: vec![1],
+                    },
+                    ResolutionStep {
+                        left_parent: 4,
+                        right_parent: 3,
+                        pivot_var: 1,
+                        resolvent: vec![],
+                    },
+                ],
+            },
+        )
+        .unwrap();
+
         let proof = prove_unsat(&instance).unwrap();
         verify_unsat(&instance.public_statement(), &proof).unwrap();
     }
@@ -2051,5 +2397,28 @@ mod tests {
             prove_unsat(&instance),
             Err(Plonky3BackendError::Verification(_))
         ));
+    }
+
+    #[test]
+    fn accepts_unused_out_of_range_formula_literals() {
+        let formula = CnfFormula {
+            num_vars: 1,
+            clauses: vec![vec![1], vec![-1], vec![2]],
+        };
+        let instance = validate_resolution_instance(
+            &formula,
+            ResolutionProof {
+                steps: vec![ResolutionStep {
+                    left_parent: 1,
+                    right_parent: 2,
+                    pivot_var: 1,
+                    resolvent: vec![],
+                }],
+            },
+        )
+        .unwrap();
+
+        let proof = prove_unsat(&instance).unwrap();
+        verify_unsat(&instance.public_statement(), &proof).unwrap();
     }
 }

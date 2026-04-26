@@ -44,7 +44,19 @@ impl CnfFormula {
     }
 
     pub fn sha256_digest(&self) -> [u8; 32] {
-        Sha256::digest(self.to_canonical_bytes()).into()
+        let mut hasher = Sha256::new();
+        hasher.update(Self::NORM_MAGIC);
+        hasher.update(self.num_vars.to_be_bytes());
+        hasher.update((self.clauses.len() as u32).to_be_bytes());
+
+        for clause in &self.clauses {
+            hasher.update((clause.len() as u32).to_be_bytes());
+            for lit in clause {
+                hasher.update(lit.to_be_bytes());
+            }
+        }
+
+        hasher.finalize().into()
     }
 }
 
@@ -365,6 +377,7 @@ impl fmt::Display for CnfFormula {
 #[cfg(test)]
 mod tests {
     use super::CnfFormula;
+    use sha2::Digest;
 
     #[test]
     fn canonical_digest_preserves_raw_clause_layout() {
@@ -379,5 +392,16 @@ mod tests {
 
         assert_ne!(lhs.to_canonical_bytes(), rhs.to_canonical_bytes());
         assert_ne!(lhs.sha256_digest(), rhs.sha256_digest());
+    }
+
+    #[test]
+    fn sha256_digest_matches_canonical_bytes_digest() {
+        let formula = CnfFormula {
+            num_vars: 4,
+            clauses: vec![vec![3, -1, 3], vec![], vec![2, -4]],
+        };
+        let expected: [u8; 32] = sha2::Sha256::digest(formula.to_canonical_bytes()).into();
+
+        assert_eq!(formula.sha256_digest(), expected);
     }
 }

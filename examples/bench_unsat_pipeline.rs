@@ -18,7 +18,12 @@ use zk_prover::{
             prove_unsat as prove_hyperplonk_unsat, verify_unsat as verify_hyperplonk_unsat,
         },
         phase2::{validate_resolution_instance_from_unfolded_trace, UnsatPublicStatement},
-        plonky3::air::{prove_unsat as prove_plonky3_unsat, verify_unsat as verify_plonky3_unsat},
+        plonky3::air::{
+            prove_unsat as prove_plonky3_unsat,
+            prove_unsat_committed as prove_plonky3_unsat_committed,
+            verify_unsat as verify_plonky3_unsat,
+            verify_unsat_committed as verify_plonky3_unsat_committed,
+        },
     },
     encode_c_source_to_cnf, SVCOMP_BENCHMARK_ROOT, SVCOMP_FIXTURES, SYNTHETIC_FIXTURE_ROOT,
     UNSAT_PIPELINE_FIXTURES,
@@ -37,6 +42,7 @@ struct Args {
     skip_hyperplonk: bool,
     skip_plonky3: bool,
     skip_zkunsat: bool,
+    check_formula_commitment: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -84,6 +90,10 @@ struct BenchMetadata {
     median_ms: f64,
     average_ms: f64,
     last_ms: f64,
+    verify_samples_ms: Option<Vec<f64>>,
+    median_verify_ms: Option<f64>,
+    average_verify_ms: Option<f64>,
+    last_verify_ms: Option<f64>,
     proof_bytes: Option<usize>,
 }
 
@@ -257,13 +267,16 @@ fn main() -> Result<(), Box<dyn Error>> {
                         let (hyperplonk_proof, hyperplonk_bench) =
                             benchmark(args.runs, || prove_hyperplonk_unsat(&instance))
                                 .map_err(|err| Box::new(err) as Box<dyn Error>)?;
-                        verify_hyperplonk_unsat(&instance.public_statement(), &hyperplonk_proof)
-                            .map_err(|err| Box::new(err) as Box<dyn Error>)?;
+                        let (_, hyperplonk_verify_bench) = benchmark(args.runs, || {
+                            verify_hyperplonk_unsat(&instance.public_statement(), &hyperplonk_proof)
+                        })
+                        .map_err(|err| Box::new(err) as Box<dyn Error>)?;
                         Ok(bench_metadata(
                             "hyperplonk",
                             rayon_threads,
                             args.runs,
                             &hyperplonk_bench,
+                            Some(&hyperplonk_verify_bench),
                             Some(hyperplonk_proof.proof.len()),
                         ))
                     })() {
@@ -295,17 +308,35 @@ fn main() -> Result<(), Box<dyn Error>> {
                     None
                 } else {
                     match (|| -> Result<BenchMetadata, Box<dyn Error>> {
-                        let (plonky3_proof, plonky3_bench) =
-                            benchmark(args.runs, || prove_plonky3_unsat(&instance))
-                                .map_err(|err| Box::new(err) as Box<dyn Error>)?;
-                        verify_plonky3_unsat(&instance.public_statement(), &plonky3_proof)
-                            .map_err(|err| Box::new(err) as Box<dyn Error>)?;
+                        let (plonky3_proof, plonky3_bench) = benchmark(args.runs, || {
+                            if args.check_formula_commitment {
+                                prove_plonky3_unsat_committed(&instance)
+                            } else {
+                                prove_plonky3_unsat(&instance)
+                            }
+                        })
+                        .map_err(|err| Box::new(err) as Box<dyn Error>)?;
+                        let plonky3_proof_bytes = postcard::to_allocvec(&plonky3_proof.proof)
+                            .map_err(|err| Box::new(err) as Box<dyn Error>)?
+                            .len();
+                        let (_, plonky3_verify_bench) = benchmark(args.runs, || {
+                            if args.check_formula_commitment {
+                                verify_plonky3_unsat_committed(
+                                    &instance.committed_public_statement(),
+                                    &plonky3_proof,
+                                )
+                            } else {
+                                verify_plonky3_unsat(&instance.public_statement(), &plonky3_proof)
+                            }
+                        })
+                        .map_err(|err| Box::new(err) as Box<dyn Error>)?;
                         Ok(bench_metadata(
                             "plonky3",
                             rayon_threads,
                             args.runs,
                             &plonky3_bench,
-                            None,
+                            Some(&plonky3_verify_bench),
+                            Some(plonky3_proof_bytes),
                         ))
                     })() {
                         Ok(meta) => {
@@ -345,8 +376,14 @@ fn main() -> Result<(), Box<dyn Error>> {
                         &fixture_dir,
                     ) {
                         Ok(bench) => {
-                            let meta =
-                                bench_metadata("zkunsat", zkunsat_threads, args.runs, &bench, None);
+                            let meta = bench_metadata(
+                                "zkunsat",
+                                zkunsat_threads,
+                                args.runs,
+                                &bench,
+                                None,
+                                None,
+                            );
                             write_json(
                                 fixture_dir
                                     .join(format!("bench_zkunsat_threads_{zkunsat_threads}.json")),
@@ -410,6 +447,7 @@ impl Args {
         let mut skip_hyperplonk = false;
         let mut skip_plonky3 = false;
         let mut skip_zkunsat = false;
+        let mut check_formula_commitment = false;
         let mut benchmark_root_overridden = false;
         let mut output_dir_overridden = false;
 
@@ -442,6 +480,7 @@ impl Args {
                 "--skip-hyperplonk" => skip_hyperplonk = true,
                 "--skip-plonky3" => skip_plonky3 = true,
                 "--skip-zkunsat" => skip_zkunsat = true,
+                "--check-formula-commitment" => check_formula_commitment = true,
                 "--help" | "-h" => {
                     print_usage();
                     std::process::exit(0);
@@ -484,6 +523,7 @@ impl Args {
             skip_hyperplonk,
             skip_plonky3,
             skip_zkunsat,
+            check_formula_commitment,
         })
     }
 }
@@ -503,6 +543,7 @@ fn print_usage() {
          --skip-hyperplonk         do not benchmark HyperPlonk\n\
          --skip-plonky3            do not benchmark the Plonky3 backend\n\
          --skip-zkunsat            do not benchmark ZKUNSAT\n\
+         --check-formula-commitment enable Plonky3 private-formula commitment constraints\n\
          \n\
          presets:\n\
          svcomp           official SV-COMP slice; benchmarks encode+solve and only proves UNSAT cases when any exist\n\
@@ -715,13 +756,13 @@ fn zkunsat_env(zkunsat_root: &Path, threads: usize) -> Vec<(String, String)> {
 
 fn write_summary_csv(path: PathBuf, rows: &[FixtureResult]) -> Result<(), Box<dyn Error>> {
     let mut out = String::from(
-        "fixture,status,vars,clauses,resolution_steps,backend,threads,runs,median_ms,avg_ms,last_ms,proof_bytes\n",
+        "fixture,status,vars,clauses,resolution_steps,backend,threads,runs,median_prove_ms,avg_prove_ms,last_prove_ms,median_verify_ms,avg_verify_ms,last_verify_ms,proof_bytes\n",
     );
 
     for row in rows {
         if row.resolution_steps.is_none() {
             out.push_str(&format!(
-                "{},SAT,{},{},,,,,,,,\n",
+                "{},SAT,{},{},,,,,,,,,,,\n",
                 row.fixture, row.vars, row.clauses,
             ));
             continue;
@@ -733,7 +774,7 @@ fn write_summary_csv(path: PathBuf, rows: &[FixtureResult]) -> Result<(), Box<dy
             .flatten()
         {
             out.push_str(&format!(
-                "{},UNSAT,{},{},{},{},{},{},{:.3},{:.3},{:.3},{}\n",
+                "{},UNSAT,{},{},{},{},{},{},{:.3},{:.3},{:.3},{},{},{},{}\n",
                 row.fixture,
                 row.vars,
                 row.clauses,
@@ -744,6 +785,9 @@ fn write_summary_csv(path: PathBuf, rows: &[FixtureResult]) -> Result<(), Box<dy
                 bench.median_ms,
                 bench.average_ms,
                 bench.last_ms,
+                format_opt_ms(bench.median_verify_ms),
+                format_opt_ms(bench.average_verify_ms),
+                format_opt_ms(bench.last_verify_ms),
                 bench
                     .proof_bytes
                     .map(|value| value.to_string())
@@ -789,6 +833,7 @@ fn bench_metadata(
     threads: usize,
     runs: usize,
     samples: &[f64],
+    verify_samples: Option<&[f64]>,
     proof_bytes: Option<usize>,
 ) -> BenchMetadata {
     BenchMetadata {
@@ -799,8 +844,16 @@ fn bench_metadata(
         median_ms: median_ms(samples),
         average_ms: average_ms(samples),
         last_ms: *samples.last().unwrap_or(&0.0),
+        verify_samples_ms: verify_samples.map(|samples| samples.to_vec()),
+        median_verify_ms: verify_samples.map(median_ms),
+        average_verify_ms: verify_samples.map(average_ms),
+        last_verify_ms: verify_samples.and_then(|samples| samples.last().copied()),
         proof_bytes,
     }
+}
+
+fn format_opt_ms(value: Option<f64>) -> String {
+    value.map(|value| format!("{value:.3}")).unwrap_or_default()
 }
 
 fn median_ms(samples: &[f64]) -> f64 {

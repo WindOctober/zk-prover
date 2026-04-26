@@ -5,6 +5,7 @@ edition.workspace = true
 publish = false
 
 [dependencies]
+bincode = "1"
 clap.workspace = true
 sp1-sdk.workspace = true
 zk-prover = { path = "../../../../" }

@@ -3,10 +3,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::backend::cnf::{CnfFormula, Lit};
 
-const COMMIT_MOD_A: u64 = 1_000_000_007;
-const COMMIT_MOD_B: u64 = 1_000_000_009;
-const COMMIT_IDX_SCALE_A: u64 = 104_729;
-const COMMIT_IDX_SCALE_B: u64 = 130_363;
+pub(crate) const COMMIT_FIELD_MODULUS: u64 = 2_013_265_921;
+pub(crate) const COMMIT_ROOT_ALPHA_A: u64 = 1_000_003;
+pub(crate) const COMMIT_ROOT_ALPHA_B: u64 = 1_000_033;
+pub(crate) const COMMIT_INDEX_SCALE_A: u64 = 104_729;
+pub(crate) const COMMIT_INDEX_SCALE_B: u64 = 130_363;
+pub(crate) const COMMIT_LEN_SCALE_A: u64 = 911_382_323;
+pub(crate) const COMMIT_LEN_SCALE_B: u64 = 972_663_749;
+pub(crate) const COMMIT_SLOT_SCALE_A: u64 = 65_537;
+pub(crate) const COMMIT_SLOT_SCALE_B: u64 = 131_071;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FormulaCommitment {
@@ -62,6 +67,12 @@ pub struct UnsatPublicStatement {
     pub max_clause_width: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommittedUnsatPublicStatement {
+    pub commitment: FormulaCommitment,
+    pub air_max_clause_width: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SatOutcome {
     Sat(ValidatedSatInstance),
@@ -100,7 +111,9 @@ pub enum ExternalResolutionTraceError {
     UnsupportedArity { row: usize, actual: usize },
     #[error("unfolded trace row {row} is missing a pivot literal")]
     MissingPivot { row: usize },
-    #[error("unfolded trace row {row} references an initial clause not present in the source formula")]
+    #[error(
+        "unfolded trace row {row} references an initial clause not present in the source formula"
+    )]
     UnknownInitialClause { row: usize },
     #[error("validated resolution instance rejected the external trace: {0}")]
     Validation(#[from] Phase2Error),
@@ -108,31 +121,47 @@ pub enum ExternalResolutionTraceError {
 
 impl FormulaCommitment {
     pub fn from_formula(formula: &CnfFormula) -> Result<Self, Phase2Error> {
-        let max_clause_width = formula
-            .clauses
-            .iter()
-            .map(|clause| clause.len() as u32)
-            .max()
-            .unwrap_or(0);
+        let mut canonical_clauses = Vec::with_capacity(formula.clauses.len());
+        let mut max_clause_width = 0usize;
+        for clause in &formula.clauses {
+            let mut normalized = clause.clone();
+            normalized.sort_unstable();
+            normalized.dedup();
+            max_clause_width = max_clause_width.max(normalized.len());
+            canonical_clauses.push(normalized);
+        }
+
+        let slot_weights_a = commitment_slot_weights(max_clause_width, COMMIT_SLOT_SCALE_A);
+        let slot_weights_b = commitment_slot_weights(max_clause_width, COMMIT_SLOT_SCALE_B);
 
         let mut mix_a = 0u64;
         let mut mix_b = 0u64;
 
-        for (index, clause) in formula.clauses.iter().enumerate() {
+        for (index, clause) in canonical_clauses.iter().enumerate() {
             let clause_index = (index + 1) as u64;
-            let clause_mix_a = clause_weight(clause_index, clause, COMMIT_MOD_A, 911_382_323)?;
-            let clause_mix_b = clause_weight(clause_index, clause, COMMIT_MOD_B, 972_663_749)?;
-            mix_a = (mix_a + clause_mix_a) % COMMIT_MOD_A;
-            mix_b = (mix_b + clause_mix_b) % COMMIT_MOD_B;
+            let (clause_mix_a, clause_mix_b) =
+                clause_weight_pair(clause_index, clause, &slot_weights_a, &slot_weights_b);
+            mix_a = field_add(field_mul(mix_a, COMMIT_ROOT_ALPHA_A), clause_mix_a);
+            mix_b = field_add(field_mul(mix_b, COMMIT_ROOT_ALPHA_B), clause_mix_b);
         }
 
         Ok(Self {
             num_vars: formula.num_vars,
             num_clauses: formula.clauses.len() as u32,
-            max_clause_width,
+            max_clause_width: max_clause_width as u32,
             mix_a: mix_a as u32,
             mix_b: mix_b as u32,
         })
+    }
+}
+
+impl std::fmt::Display for FormulaCommitment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "v{}-c{}-w{}-{:#010x}-{:#010x}",
+            self.num_vars, self.num_clauses, self.max_clause_width, self.mix_a, self.mix_b
+        )
     }
 }
 
@@ -190,6 +219,13 @@ impl ValidatedResolutionInstance {
             num_vars: self.commitment.num_vars,
             num_clauses: self.commitment.num_clauses,
             max_clause_width: self.max_resolution_clause_width(),
+        }
+    }
+
+    pub fn committed_public_statement(&self) -> CommittedUnsatPublicStatement {
+        CommittedUnsatPublicStatement {
+            commitment: self.commitment.clone(),
+            air_max_clause_width: self.max_resolution_clause_width(),
         }
     }
 
@@ -333,18 +369,14 @@ pub fn validate_resolution_instance_from_unfolded_trace(
     formula: &CnfFormula,
     unfolded_trace: &str,
 ) -> Result<ValidatedResolutionInstance, ExternalResolutionTraceError> {
-    let clause_ids = formula
-        .clauses
-        .iter()
-        .enumerate()
-        .fold(
-            std::collections::BTreeMap::<Vec<Lit>, u32>::new(),
-            |mut ids, (index, clause)| {
-                ids.entry(normalize_clause(clause))
-                    .or_insert((index + 1) as u32);
-                ids
-            },
-        );
+    let clause_ids = formula.clauses.iter().enumerate().fold(
+        std::collections::BTreeMap::<Vec<Lit>, u32>::new(),
+        |mut ids, (index, clause)| {
+            ids.entry(normalize_clause(clause))
+                .or_insert((index + 1) as u32);
+            ids
+        },
+    );
     let parsed_rows = parse_unfolded_trace_rows(unfolded_trace)?;
 
     let mut row_to_clause_id = std::collections::BTreeMap::<usize, u32>::new();
@@ -418,6 +450,26 @@ pub fn validate_resolution_instance_from_unfolded_trace(
     }
 
     validate_resolution_instance(formula, ResolutionProof { steps }).map_err(Into::into)
+}
+
+pub fn resolution_instance_from_unfolded_trace(
+    unfolded_trace: &str,
+) -> Result<ValidatedResolutionInstance, ExternalResolutionTraceError> {
+    let parsed_rows = parse_unfolded_trace_rows(unfolded_trace)?;
+    let clauses = parsed_rows
+        .iter()
+        .filter(|row| row.support.is_empty())
+        .map(|row| normalize_clause(&row.clause))
+        .collect::<Vec<_>>();
+    let num_vars = parsed_rows
+        .iter()
+        .flat_map(|row| row.clause.iter().copied().chain(row.pivot))
+        .map(Lit::unsigned_abs)
+        .max()
+        .unwrap_or(0);
+    let formula = CnfFormula { num_vars, clauses };
+
+    validate_resolution_instance_from_unfolded_trace(&formula, unfolded_trace)
 }
 
 pub fn generate_resolution_proof_by_closure(
@@ -517,26 +569,81 @@ pub fn solve_formula(formula: &CnfFormula) -> Result<SatOutcome, Phase2Error> {
     }
 }
 
-fn clause_weight(
+pub(crate) fn commitment_literal_value(lit: Lit) -> u64 {
+    if lit == 0 {
+        0
+    } else if lit > 0 {
+        lit as u64
+    } else {
+        COMMIT_FIELD_MODULUS - ((-lit) as u64 % COMMIT_FIELD_MODULUS)
+    }
+}
+
+#[cfg(test)]
+fn canonical_commitment_formula(formula: &CnfFormula) -> CnfFormula {
+    CnfFormula {
+        num_vars: formula.num_vars,
+        clauses: formula
+            .clauses
+            .iter()
+            .map(|clause| {
+                let mut normalized = clause.clone();
+                normalized.sort_unstable();
+                normalized.dedup();
+                normalized
+            })
+            .collect(),
+    }
+}
+
+fn commitment_slot_weights(max_clause_width: usize, slot_scale: u64) -> Vec<u64> {
+    (0..max_clause_width)
+        .map(|position| field_mul((position + 1) as u64, slot_scale))
+        .collect()
+}
+
+fn clause_weight_pair(
     clause_index: u64,
     clause: &[Lit],
-    modulus: u64,
-    literal_scale: u64,
-) -> Result<u64, Phase2Error> {
-    let mut acc = (clause_index
-        .checked_mul(COMMIT_IDX_SCALE_A)
-        .ok_or(Phase2Error::CommitmentOverflow)?)
-        % modulus;
+    slot_weights_a: &[u64],
+    slot_weights_b: &[u64],
+) -> (u64, u64) {
+    let clause_len = clause.len() as u64;
+    let mut mix_a = field_add(
+        field_mul(clause_index, COMMIT_INDEX_SCALE_A),
+        field_mul(clause_len, COMMIT_LEN_SCALE_A),
+    );
+    let mut mix_b = field_add(
+        field_mul(clause_index, COMMIT_INDEX_SCALE_B),
+        field_mul(clause_len, COMMIT_LEN_SCALE_B),
+    );
+
     for (position, lit) in clause.iter().enumerate() {
-        let lit_code = literal_code(*lit) as u64;
-        let position_weight = (position as u64 + 1)
-            .checked_mul(literal_scale)
-            .ok_or(Phase2Error::CommitmentOverflow)?
-            % modulus;
-        acc = (acc + (lit_code * position_weight) % modulus) % modulus;
+        let lit_value = commitment_literal_value(*lit);
+        mix_a = field_add(mix_a, field_mul(lit_value, slot_weights_a[position]));
+        mix_b = field_add(mix_b, field_mul(lit_value, slot_weights_b[position]));
     }
-    acc = (acc + (clause.len() as u64 * COMMIT_IDX_SCALE_B) % modulus) % modulus;
-    Ok(acc)
+
+    (mix_a, mix_b)
+}
+
+#[inline]
+fn field_add(lhs: u64, rhs: u64) -> u64 {
+    debug_assert!(lhs < COMMIT_FIELD_MODULUS);
+    debug_assert!(rhs < COMMIT_FIELD_MODULUS);
+    let sum = lhs + rhs;
+    if sum >= COMMIT_FIELD_MODULUS {
+        sum - COMMIT_FIELD_MODULUS
+    } else {
+        sum
+    }
+}
+
+#[inline]
+fn field_mul(lhs: u64, rhs: u64) -> u64 {
+    debug_assert!(lhs < COMMIT_FIELD_MODULUS);
+    debug_assert!(rhs < COMMIT_FIELD_MODULUS);
+    (lhs * rhs) % COMMIT_FIELD_MODULUS
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -725,15 +832,6 @@ fn eval_lit(lit: Lit, assignment: &[bool]) -> bool {
     }
 }
 
-pub(crate) fn literal_code(lit: Lit) -> u32 {
-    let var = lit.unsigned_abs();
-    if lit > 0 {
-        var * 2
-    } else {
-        var * 2 + 1
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -744,6 +842,98 @@ mod tests {
             num_vars: 1,
             clauses: vec![vec![1], vec![-1]],
         }
+    }
+
+    fn reference_field_add(lhs: u64, rhs: u64) -> u64 {
+        ((lhs as u128 + rhs as u128) % COMMIT_FIELD_MODULUS as u128) as u64
+    }
+
+    fn reference_field_mul(lhs: u64, rhs: u64) -> u64 {
+        ((lhs as u128 * rhs as u128) % COMMIT_FIELD_MODULUS as u128) as u64
+    }
+
+    fn reference_formula_commitment(formula: &CnfFormula) -> FormulaCommitment {
+        let canonical = canonical_commitment_formula(formula);
+        let max_clause_width = canonical
+            .clauses
+            .iter()
+            .map(|clause| clause.len() as u32)
+            .max()
+            .unwrap_or(0);
+
+        let mut mix_a = 0u64;
+        let mut mix_b = 0u64;
+
+        for (index, clause) in canonical.clauses.iter().enumerate() {
+            let clause_index = (index + 1) as u64;
+            let mut clause_mix_a = reference_field_mul(clause_index, COMMIT_INDEX_SCALE_A);
+            clause_mix_a = reference_field_add(
+                clause_mix_a,
+                reference_field_mul(clause.len() as u64, COMMIT_LEN_SCALE_A),
+            );
+            let mut clause_mix_b = reference_field_mul(clause_index, COMMIT_INDEX_SCALE_B);
+            clause_mix_b = reference_field_add(
+                clause_mix_b,
+                reference_field_mul(clause.len() as u64, COMMIT_LEN_SCALE_B),
+            );
+
+            for position in 0..max_clause_width as usize {
+                let lit_value = clause
+                    .get(position)
+                    .copied()
+                    .map(commitment_literal_value)
+                    .unwrap_or(0);
+                clause_mix_a = reference_field_add(
+                    clause_mix_a,
+                    reference_field_mul(
+                        lit_value,
+                        reference_field_mul((position + 1) as u64, COMMIT_SLOT_SCALE_A),
+                    ),
+                );
+                clause_mix_b = reference_field_add(
+                    clause_mix_b,
+                    reference_field_mul(
+                        lit_value,
+                        reference_field_mul((position + 1) as u64, COMMIT_SLOT_SCALE_B),
+                    ),
+                );
+            }
+
+            mix_a = reference_field_add(
+                reference_field_mul(mix_a, COMMIT_ROOT_ALPHA_A),
+                clause_mix_a,
+            );
+            mix_b = reference_field_add(
+                reference_field_mul(mix_b, COMMIT_ROOT_ALPHA_B),
+                clause_mix_b,
+            );
+        }
+
+        FormulaCommitment {
+            num_vars: formula.num_vars,
+            num_clauses: formula.clauses.len() as u32,
+            max_clause_width,
+            mix_a: mix_a as u32,
+            mix_b: mix_b as u32,
+        }
+    }
+
+    #[test]
+    fn optimized_formula_commitment_matches_reference_algorithm() {
+        let formula = CnfFormula {
+            num_vars: 7,
+            clauses: vec![
+                vec![3, -1, 3, 2],
+                vec![-4, 2],
+                vec![6, -6, 6, 5, -2],
+                vec![],
+            ],
+        };
+
+        assert_eq!(
+            FormulaCommitment::from_formula(&formula).unwrap(),
+            reference_formula_commitment(&formula)
+        );
     }
 
     #[test]
@@ -784,6 +974,22 @@ DEGREE: 4
         let instance = validate_resolution_instance_from_unfolded_trace(&formula, trace).unwrap();
         assert_eq!(instance.proof.steps.len(), 1);
         assert_eq!(instance.formula.clauses.len(), 3);
+        assert!(instance.expanded_steps[0].resolvent.is_empty());
+    }
+
+    #[test]
+    fn reconstructs_resolution_instance_from_unfolded_trace() {
+        let trace = "\
+index:  0  clause:  1  support:    pivot:   end:  0
+index:  1  clause:  -1  support:    pivot:   end:  0
+index:  2  clause:    support:  0 1  pivot:  1 end:  0
+DEGREE: 4
+";
+
+        let instance = resolution_instance_from_unfolded_trace(trace).unwrap();
+        assert_eq!(instance.formula.num_vars, 1);
+        assert_eq!(instance.formula.clauses.len(), 2);
+        assert_eq!(instance.proof.steps.len(), 1);
         assert!(instance.expanded_steps[0].resolvent.is_empty());
     }
 
