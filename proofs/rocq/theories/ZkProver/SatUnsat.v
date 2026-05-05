@@ -162,6 +162,169 @@ Record ResolutionAirRow := {
   air_right_keep_flags : list bool
 }.
 
+Inductive ResolutionTraceCell : Type :=
+| CellBool : bool -> ResolutionTraceCell
+| CellNat : nat -> ResolutionTraceCell
+| CellLit : option lit -> ResolutionTraceCell.
+
+Definition resolution_trace_matrix := matrix ResolutionTraceCell.
+
+Definition RES_IS_SEMANTIC_COL := 0.
+Definition RES_IS_TABLE_COL := 1.
+Definition RES_IS_QUERY_COL := 2.
+Definition RES_IS_DERIVED_COL := 3.
+Definition RES_ENTRY_ID_COL := 4.
+Definition RES_LEFT_ID_COL := 5.
+Definition RES_RIGHT_ID_COL := 6.
+Definition RES_PIVOT_COL := 7.
+Definition RES_PIVOT_INV_COL := 8.
+Definition RES_COMMIT_ACC_A_COL := 9.
+Definition RES_COMMIT_ACC_B_COL := 10.
+Definition RES_CLAUSE_MULT_COL := 16.
+Definition RES_LEFT_ID_INV_COL := 26.
+Definition RES_RIGHT_ID_INV_COL := 27.
+Definition RES_LEFT_GAP_INV_COL := 28.
+Definition RES_RIGHT_GAP_INV_COL := 29.
+Definition RES_HEADER_WIDTH := 36.
+Definition RES_RANGE_LIMBS := 2.
+Definition RES_LITERAL_AUX_WIDTH := 2.
+
+Definition res_current_lit_col (slot : nat) : nat :=
+  RES_HEADER_WIDTH + slot.
+
+Definition res_left_lit_col (width slot : nat) : nat :=
+  RES_HEADER_WIDTH + width + slot.
+
+Definition res_right_lit_col (width slot : nat) : nat :=
+  RES_HEADER_WIDTH + width * 2 + slot.
+
+Definition res_pivot_delta_base (width : nat) : nat :=
+  RES_HEADER_WIDTH + width * 3.
+
+Definition res_left_gap_base (width : nat) : nat :=
+  res_pivot_delta_base width + RES_RANGE_LIMBS.
+
+Definition res_right_gap_base (width : nat) : nat :=
+  res_left_gap_base width + RES_RANGE_LIMBS.
+
+Definition res_literal_aux_base (width clause_block slot : nat) : nat :=
+  res_right_gap_base width
+    + RES_RANGE_LIMBS
+    + (clause_block * width + slot) * RES_LITERAL_AUX_WIDTH.
+
+Definition res_literal_aux_end (width : nat) : nat :=
+  RES_HEADER_WIDTH
+    + width * 3
+    + RES_RANGE_LIMBS
+    + RES_RANGE_LIMBS
+    + RES_RANGE_LIMBS
+    + width * 3 * RES_LITERAL_AUX_WIDTH.
+
+Definition res_left_pivot_eq_base (width : nat) : nat :=
+  res_literal_aux_end width.
+
+Definition res_left_pivot_inv_base (width : nat) : nat :=
+  res_left_pivot_eq_base width + width.
+
+Definition res_right_neg_pivot_eq_base (width : nat) : nat :=
+  res_left_pivot_inv_base width + width.
+
+Definition res_right_neg_pivot_inv_base (width : nat) : nat :=
+  res_right_neg_pivot_eq_base width + width.
+
+Definition res_left_keep_base (width : nat) : nat :=
+  res_right_neg_pivot_inv_base width + width.
+
+Definition res_right_keep_base (width : nat) : nat :=
+  res_left_keep_base width + width.
+
+Definition res_left_source_count_base (width : nat) : nat :=
+  res_right_keep_base width + width.
+
+Definition res_left_selected_count_base (width : nat) : nat :=
+  res_left_source_count_base width + width.
+
+Definition res_right_source_count_base (width : nat) : nat :=
+  res_left_selected_count_base width + width.
+
+Definition res_right_selected_count_base (width : nat) : nat :=
+  res_right_source_count_base width + width.
+
+Definition res_left_source_prod_a_base (width : nat) : nat :=
+  res_right_selected_count_base width + width.
+
+Definition res_left_source_prod_b_base (width : nat) : nat :=
+  res_left_source_prod_a_base width + width.
+
+Definition res_left_selected_prod_a_base (width : nat) : nat :=
+  res_left_source_prod_b_base width + width.
+
+Definition res_left_selected_prod_b_base (width : nat) : nat :=
+  res_left_selected_prod_a_base width + width.
+
+Definition res_right_source_prod_a_base (width : nat) : nat :=
+  res_left_selected_prod_b_base width + width.
+
+Definition res_right_source_prod_b_base (width : nat) : nat :=
+  res_right_source_prod_a_base width + width.
+
+Definition res_right_selected_prod_a_base (width : nat) : nat :=
+  res_right_source_prod_b_base width + width.
+
+Definition res_right_selected_prod_b_base (width : nat) : nat :=
+  res_right_selected_prod_a_base width + width.
+
+Definition resolution_trace_width (width : nat) : nat :=
+  res_right_selected_prod_b_base width + width.
+
+Definition trace_bool
+    (trace : resolution_trace_matrix) (row col : nat) (value : bool) : Prop :=
+  trace row col = Some (CellBool value).
+
+Definition trace_nat
+    (trace : resolution_trace_matrix) (row col value : nat) : Prop :=
+  trace row col = Some (CellNat value).
+
+Definition trace_lit
+    (trace : resolution_trace_matrix) (row col : nat) (value : option lit) : Prop :=
+  trace row col = Some (CellLit value).
+
+Definition trace_clause_block
+    (trace : resolution_trace_matrix)
+    (row base width : nat)
+    (c : clause) : Prop :=
+  forall slot,
+    slot < width ->
+    trace_lit trace row (base + slot) (nth_error c slot).
+
+Definition trace_flag_block
+    (trace : resolution_trace_matrix)
+    (row base width : nat)
+    (flags : list bool) : Prop :=
+  forall slot,
+    slot < width ->
+    trace_bool trace row (base + slot) (nth slot flags false).
+
+Definition trace_row_extracts_air
+    (width : nat) (trace : resolution_trace_matrix)
+    (row_index : nat) (row : ResolutionAirRow) : Prop :=
+  trace_bool trace row_index RES_IS_SEMANTIC_COL (air_is_semantic row) /\
+  trace_bool trace row_index RES_IS_DERIVED_COL (air_is_derived row) /\
+  trace_nat trace row_index RES_ENTRY_ID_COL (air_entry_id row) /\
+  trace_nat trace row_index RES_LEFT_ID_COL (air_left_id row) /\
+  trace_nat trace row_index RES_RIGHT_ID_COL (air_right_id row) /\
+  trace_nat trace row_index RES_PIVOT_COL (air_pivot row) /\
+  trace_clause_block
+    trace row_index (res_current_lit_col 0) width (air_current_clause row) /\
+  trace_clause_block
+    trace row_index (res_left_lit_col width 0) width (air_left_clause row) /\
+  trace_clause_block
+    trace row_index (res_right_lit_col width 0) width (air_right_clause row) /\
+  trace_flag_block
+    trace row_index (res_left_keep_base width) width (air_left_keep_flags row) /\
+  trace_flag_block
+    trace row_index (res_right_keep_base width) width (air_right_keep_flags row).
+
 Definition air_selected_by_flags
     (c : clause) (flags : list bool) (l : lit) : Prop :=
   exists slot,
@@ -260,10 +423,147 @@ Proof.
            exact Hrest.
 Qed.
 
+Definition resolution_trace_matrix_step_constraints
+    (known : list clause)
+    (row_index width : nat)
+    (trace : resolution_trace_matrix)
+    (step : ResolutionStep) : Prop :=
+  exists row,
+    trace_row_extracts_air width trace row_index row /\
+    resolution_air_row_for_step step row /\
+    resolution_air_row_constraints row /\
+    clause_by_id known (left_parent step) (air_left_clause row) /\
+    clause_by_id known (right_parent step) (air_right_clause row).
+
+Fixpoint resolution_trace_matrix_steps_valid
+    (known : list clause)
+    (row_index width : nat)
+    (trace : resolution_trace_matrix)
+    (steps : list ResolutionStep) : Prop :=
+  match steps with
+  | [] => True
+  | step :: rest =>
+      resolution_trace_matrix_step_constraints known row_index width trace step /\
+      resolution_trace_matrix_steps_valid
+        (known ++ [step_resolvent step]) (S row_index) width trace rest
+  end.
+
+Fixpoint resolution_trace_rows_extract_air_for_steps
+    (row_index width : nat)
+    (trace : resolution_trace_matrix)
+    (steps : list ResolutionStep)
+    (rows : list ResolutionAirRow) : Prop :=
+  match steps, rows with
+  | [], _ => True
+  | _ :: _, [] => False
+  | _ :: rest, row :: row_rest =>
+      trace_row_extracts_air width trace row_index row /\
+      resolution_trace_rows_extract_air_for_steps
+        (S row_index) width trace rest row_rest
+  end.
+
+Fixpoint resolution_trace_matrix_steps_valid_with_rows
+    (known : list clause)
+    (row_index width : nat)
+    (trace : resolution_trace_matrix)
+    (steps : list ResolutionStep)
+    (rows : list ResolutionAirRow) : Prop :=
+  match steps, rows with
+  | [], _ => True
+  | _ :: _, [] => False
+  | step :: rest, row :: row_rest =>
+      trace_row_extracts_air width trace row_index row /\
+      resolution_air_row_for_step step row /\
+      resolution_air_row_constraints row /\
+      clause_by_id known (left_parent step) (air_left_clause row) /\
+      clause_by_id known (right_parent step) (air_right_clause row) /\
+      resolution_trace_matrix_steps_valid_with_rows
+        (known ++ [step_resolvent step]) (S row_index) width trace rest row_rest
+  end.
+
+Theorem resolution_trace_matrix_steps_valid_with_rows_iff_air :
+  forall known steps rows row_index width trace,
+    resolution_trace_matrix_steps_valid_with_rows
+      known row_index width trace steps rows <->
+    resolution_trace_rows_extract_air_for_steps
+      row_index width trace steps rows /\
+    resolution_air_steps_valid known steps rows.
+Proof.
+  intros known steps.
+  revert known.
+  induction steps as [| step rest IH]; intros known rows row_index width trace.
+  - simpl. split; intro H.
+    + split; exact I.
+    + exact I.
+  - destruct rows as [| row row_rest].
+    + simpl. split.
+      * intro H. contradiction.
+      * intros [Hextract _]. contradiction.
+    + simpl. split.
+      * intros [Hextract [Hfor_step [Hrow [Hleft_id [Hright_id Hrest]]]]].
+        destruct (IH (known ++ [step_resolvent step])
+          row_rest (S row_index) width trace) as [IHforward _].
+        destruct (IHforward Hrest) as [Hextract_rest Hair_rest].
+        split.
+        -- split; [exact Hextract| exact Hextract_rest].
+        -- split; [exact Hfor_step|].
+           split; [exact Hrow|].
+           split; [exact Hleft_id|].
+           split; [exact Hright_id|].
+           exact Hair_rest.
+      * intros [[Hextract Hextract_rest]
+          [Hfor_step [Hrow [Hleft_id [Hright_id Hair_rest]]]]].
+        split; [exact Hextract|].
+        split; [exact Hfor_step|].
+        split; [exact Hrow|].
+        split; [exact Hleft_id|].
+        split; [exact Hright_id|].
+        destruct (IH (known ++ [step_resolvent step])
+          row_rest (S row_index) width trace) as [_ IHbackward].
+        apply IHbackward.
+        split; [exact Hextract_rest| exact Hair_rest].
+Qed.
+
+Theorem resolution_trace_matrix_steps_air_sound :
+  forall known steps row_index width trace,
+    resolution_trace_matrix_steps_valid known row_index width trace steps ->
+    exists rows, resolution_air_steps_valid known steps rows.
+Proof.
+  intros known steps.
+  revert known.
+  induction steps as [| step rest IH]; intros known row_index width trace Hmatrix.
+  - exists []. exact I.
+  - simpl in Hmatrix.
+    destruct Hmatrix as [Hstep Hrest].
+    destruct Hstep as [row [_ [Hfor_step [Hrow [Hleft_id Hright_id]]]]].
+    destruct (IH (known ++ [step_resolvent step]) (S row_index) width trace Hrest)
+      as [rows Hrows].
+    exists (row :: rows).
+    simpl.
+    split; [exact Hfor_step|].
+    split; [exact Hrow|].
+    split; [exact Hleft_id|].
+    split; [exact Hright_id|].
+    exact Hrows.
+Qed.
+
+Theorem resolution_trace_matrix_steps_sound :
+  forall known steps row_index width trace,
+    resolution_trace_matrix_steps_valid known row_index width trace steps ->
+    resolution_steps_valid known steps.
+Proof.
+  intros known steps row_index width trace Hmatrix.
+  destruct (resolution_trace_matrix_steps_air_sound
+    known steps row_index width trace Hmatrix) as [rows Hair].
+  apply resolution_air_steps_sound with (rows := rows).
+  exact Hair.
+Qed.
+
 Record UnsatCircuitWitness := {
   unsat_steps : list ResolutionStep;
   clause_matrix : matrix lit;
-  resolution_air_rows : list ResolutionAirRow
+  resolution_trace_width_bound : nat;
+  resolution_trace : resolution_trace_matrix
 }.
 
 Definition row_encodes_clause (m : matrix lit) (row : nat) (c : clause) : Prop :=
@@ -280,7 +580,12 @@ Definition resolution_matrix_encodes
 
 Definition unsat_circuit_constraints (f : cnf) (w : UnsatCircuitWitness) : Prop :=
   resolution_matrix_encodes f (unsat_steps w) (clause_matrix w) /\
-  resolution_air_steps_valid f (unsat_steps w) (resolution_air_rows w) /\
+  resolution_trace_matrix_steps_valid
+    f
+    (length f)
+    (resolution_trace_width_bound w)
+    (resolution_trace w)
+    (unsat_steps w) /\
   final_step_empty (unsat_steps w).
 
 Theorem unsat_constraints_sound_refutation :
@@ -290,7 +595,10 @@ Theorem unsat_constraints_sound_refutation :
 Proof.
   intros f w [_ [Hsteps Hempty]].
   split.
-  - apply resolution_air_steps_sound with (rows := resolution_air_rows w).
+  - apply resolution_trace_matrix_steps_sound with
+      (row_index := length f)
+      (width := resolution_trace_width_bound w)
+      (trace := resolution_trace w).
     exact Hsteps.
   - exact Hempty.
 Qed.
