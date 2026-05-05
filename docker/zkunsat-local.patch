@@ -1,0 +1,134 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 5a3712f..f78ec05 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -2,24 +2,48 @@ cmake_minimum_required(VERSION 3.10)
+ 
+ project(emp_private_refutation)
+ 
+-
+ set(CMAKE_CXX_STANDARD 14)
+-set(CMAKE_CXX_STANDARD_REQUIRED True)
+-set(CMAKE_CXX_FLAGS "-msse4.1 -mrdseed -maes -mpclmul -O3 -pthread -w -Wl,-rpath -Wl,LIBDIR")
++set(CMAKE_CXX_STANDARD_REQUIRED ON)
++
++set(LOCAL_PREFIX "$ENV{LOCAL_PREFIX}")
++if(NOT LOCAL_PREFIX)
++  set(LOCAL_PREFIX "${CMAKE_SOURCE_DIR}/.local")
++endif()
++
++set(LOCAL_INCLUDE_DIR "${LOCAL_PREFIX}/include")
++set(LOCAL_LIB_DIR "${LOCAL_PREFIX}/lib")
++
++set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msse4.1 -mrdseed -maes -mpclmul -O3 -pthread -w")
+ 
+-include_directories(include /home/ubuntu/emp-tool)
+-include_directories(include /home/ubuntu/emp-zk)
++find_package(OpenSSL REQUIRED)
+ 
++find_library(EMP_TOOL_LIB emp-tool HINTS "${LOCAL_LIB_DIR}" REQUIRED)
++find_library(EMP_ZK_LIB emp-zk HINTS "${LOCAL_LIB_DIR}" REQUIRED)
++find_library(NTL_LIB ntl HINTS "${LOCAL_LIB_DIR}" REQUIRED)
++find_library(GMP_LIB gmp REQUIRED)
+ 
+-#
+-#enable_testing()
+-#
+-#add_subdirectory(src)
+-#add_subdirectory(test)
++include_directories(
++  "${CMAKE_SOURCE_DIR}"
++  "${LOCAL_INCLUDE_DIR}"
++)
+ 
+-# unit
+-#add_executable(test test.cpp clause.cpp f2kpoly.cpp xf2kpoly.cpp polynomial.cpp clauseRAM.cpp proof.cpp)
+-#target_link_libraries(test PUBLIC emp-tool emp-zk gmp ssl crypto ntl gmp)
++link_directories("${LOCAL_LIB_DIR}")
+ 
+ add_executable(test main.cpp polynomial.cpp clause.cpp clauseRAM.cpp)
+-target_link_libraries(test PUBLIC emp-tool emp-zk gmp ssl crypto ntl gmp)
++target_link_libraries(
++  test
++  PUBLIC
++  ${EMP_TOOL_LIB}
++  ${EMP_ZK_LIB}
++  ${NTL_LIB}
++  ${GMP_LIB}
++  OpenSSL::SSL
++  OpenSSL::Crypto
++)
++
++set_target_properties(
++  test
++  PROPERTIES
++  BUILD_RPATH "${LOCAL_LIB_DIR}"
++  INSTALL_RPATH "${LOCAL_LIB_DIR}"
++)
+diff --git a/main.cpp b/main.cpp
+index fb9cca1..1c7b041 100644
+--- a/main.cpp
++++ b/main.cpp
+@@ -1,10 +1,11 @@
+ #include <iostream>
++#include <cstdlib>
++#include <vector>
+ #include "clause.h"
+ #include "clauseRAM.h"
+ #include "commons.h"
+ 
+ int port, party;
+-const int threads = 8;
+ int DEGREE = 4;
+ block *mac, *data;
+ uint64_t data_mac_pointer;
+@@ -16,13 +17,22 @@ BoolIO <NetIO> *io;
+ int main(int argc, char **argv) {
+     cout << "---- begin ----" << endl;
+     constant = 1UL << (VAL_SZ - 2);
++    int threads = 8;
++    if (const char *threads_env = std::getenv("ZKUNSAT_THREADS")) {
++        int parsed = std::atoi(threads_env);
++        if (parsed > 0) threads = parsed;
++    }
++    if (argc > 5) {
++        int parsed = std::atoi(argv[5]);
++        if (parsed > 0) threads = parsed;
++    }
+     parse_party_and_port(argv, &party, &port);
+-    BoolIO <NetIO> *ios[threads];
++    std::vector<BoolIO <NetIO> *> ios(threads);
+     for (int i = 0; i < threads; ++i)
+         ios[i] = new BoolIO<NetIO>(new NetIO(party == ALICE ? nullptr : argv[3], port + i), party == ALICE);       
+     char *prooffile = argv[4];
+ 
+-    setup_zk_bool < BoolIO < NetIO >> (ios, threads, party);
++    setup_zk_bool < BoolIO < NetIO >> (ios.data(), threads, party);
+     ZKBoolCircExec <BoolIO<NetIO>> *exec = (ZKBoolCircExec < BoolIO < NetIO >> *)(CircuitExecution::circ_exec);
+     io = exec->ostriple->io;
+ 
+diff --git a/prover_backend/preprocess.sh b/prover_backend/preprocess.sh
+index 919e193..b857bcb 100644
+--- a/prover_backend/preprocess.sh
++++ b/prover_backend/preprocess.sh
+@@ -1,4 +1,11 @@
+ FILES="$1/*"
++PICOSAT_EX1="${PICOSAT_EX1:-./picosat-965/ex1}"
++
++if [ ! -x "$PICOSAT_EX1" ]; then
++  echo "missing executable: $PICOSAT_EX1" >&2
++  exit 1
++fi
++
+ for f in $FILES
+ do
+   echo "processing $f"
+@@ -6,7 +13,7 @@ do
+   instance="$(basename $f)"
+   tmp=${instance%".cnf"}
+   echo $tmp
+-  ./picosat-965/ex1 $f
++  "$PICOSAT_EX1" "$f"
+   python3 Sort.py  "proof.TRACECHECK" > "$2/$tmp.prf"
+   python3 unfold_proof.py "$2/$tmp.prf"
+ done

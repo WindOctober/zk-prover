@@ -1,0 +1,13 @@
+.git
+.cache
+artifacts
+target
+Data
+notes
+
+Dockerfile
+docker/README.md
+
+**/.DS_Store
+**/*.tmp
+**/*.log
