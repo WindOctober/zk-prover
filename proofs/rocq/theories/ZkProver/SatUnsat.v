@@ -386,6 +386,40 @@ Definition slot_is_left_selected (row : ResolutionAirRow) (slot : nat) : bool :=
 Definition slot_is_right_selected (row : ResolutionAirRow) (slot : nat) : bool :=
   nth slot (air_right_keep_flags row) false.
 
+Fixpoint select_clause_by_flags (c : clause) (flags : list bool) : clause :=
+  match c, flags with
+  | l :: c_tail, true :: flags_tail =>
+      l :: select_clause_by_flags c_tail flags_tail
+  | _ :: c_tail, false :: flags_tail =>
+      select_clause_by_flags c_tail flags_tail
+  | _, _ => []
+  end.
+
+Definition source_clause_without (pivot : lit) (c : clause) : clause :=
+  filter (fun l => if lit_eq_dec l pivot then false else true) c.
+
+Definition same_lit_multiset (left right : clause) : Prop :=
+  forall l,
+    count_occ lit_eq_dec left l = count_occ lit_eq_dec right l.
+
+Definition trace_resolution_multiset_constraints (row : ResolutionAirRow) : Prop :=
+  same_lit_multiset
+    (select_clause_by_flags (air_current_clause row) (air_left_keep_flags row))
+    (source_clause_without (pivot_pos (air_pivot row)) (air_left_clause row)) /\
+  same_lit_multiset
+    (select_clause_by_flags (air_current_clause row) (air_right_keep_flags row))
+    (source_clause_without (pivot_neg (air_pivot row)) (air_right_clause row)).
+
+Definition trace_current_clause_selection_constraints (row : ResolutionAirRow) : Prop :=
+  forall slot l,
+    nth_error (air_current_clause row) slot = Some l ->
+    nth_error (air_left_keep_flags row) slot = Some true \/
+    nth_error (air_right_keep_flags row) slot = Some true.
+
+Definition trace_pivot_count_constraints (width : nat) (row : ResolutionAirRow) : Prop :=
+  count_slots width (slot_is_left_pivot row) = 1 /\
+  count_slots width (slot_is_right_neg_pivot row) = 1.
+
 Definition trace_row_extracts_air
     (width : nat) (trace : resolution_trace_matrix)
     (row_index : nat) (row : ResolutionAirRow) : Prop :=
@@ -553,6 +587,173 @@ Definition air_left_source (row : ResolutionAirRow) (l : lit) : Prop :=
 Definition air_right_source (row : ResolutionAirRow) (l : lit) : Prop :=
   In l (air_right_clause row) /\ l <> pivot_neg (air_pivot row).
 
+Lemma select_clause_by_flags_sound :
+  forall c flags l,
+    In l (select_clause_by_flags c flags) <->
+      air_selected_by_flags c flags l.
+Proof.
+  induction c as [| x xs IH]; intros flags l.
+  - simpl. split.
+    + intro H. contradiction.
+    + intros [slot [Hnth _]]. destruct slot; discriminate.
+  - destruct flags as [| flag flags_tail].
+    + simpl. split.
+      * intro H. contradiction.
+      * intros [slot [_ Hflag]]. destruct slot; discriminate.
+    + destruct flag.
+      * simpl. split.
+        -- intros [Heq | Hin].
+           ++ subst. exists 0. split; reflexivity.
+           ++ rewrite IH in Hin.
+              destruct Hin as [slot [Hnth Hflag]].
+              exists (S slot). split; exact Hnth || exact Hflag.
+        -- intros [slot [Hnth Hflag]].
+           destruct slot as [| slot].
+           ++ simpl in Hnth. inversion Hnth. left. reflexivity.
+           ++ right. rewrite IH. exists slot. split; exact Hnth || exact Hflag.
+      * simpl. split.
+        -- intro Hin.
+           rewrite IH in Hin.
+           destruct Hin as [slot [Hnth Hflag]].
+           exists (S slot). split; exact Hnth || exact Hflag.
+        -- intros [slot [Hnth Hflag]].
+           destruct slot as [| slot].
+           ++ simpl in Hflag. discriminate.
+           ++ rewrite IH. exists slot. split; exact Hnth || exact Hflag.
+Qed.
+
+Lemma source_clause_without_sound :
+  forall pivot c l,
+    In l (source_clause_without pivot c) <->
+      In l c /\ l <> pivot.
+Proof.
+  intros pivot c l.
+  unfold source_clause_without.
+  rewrite filter_In.
+  destruct (lit_eq_dec l pivot) as [Heq | Hneq].
+  - subst. split.
+    + intros [_ Hfalse]. discriminate.
+    + intros [_ Hneq]. contradiction.
+  - split.
+    + intros [Hin _]. split; [exact Hin| exact Hneq].
+    + intros [Hin _]. split; [exact Hin| reflexivity].
+Qed.
+
+Lemma same_lit_multiset_in_iff :
+  forall left right l,
+    same_lit_multiset left right ->
+    (In l left <-> In l right).
+Proof.
+  intros left right l Hsame.
+  rewrite (@count_occ_In lit lit_eq_dec left l).
+  rewrite (@count_occ_In lit lit_eq_dec right l).
+  rewrite Hsame.
+  reflexivity.
+Qed.
+
+Lemma trace_resolution_multiset_constraints_sound :
+  forall row l,
+    trace_resolution_multiset_constraints row ->
+    (air_selected_by_flags (air_current_clause row) (air_left_keep_flags row) l <->
+      air_left_source row l) /\
+    (air_selected_by_flags (air_current_clause row) (air_right_keep_flags row) l <->
+      air_right_source row l).
+Proof.
+  intros row l [Hleft Hright].
+  split.
+  - rewrite <- select_clause_by_flags_sound.
+    rewrite (same_lit_multiset_in_iff l Hleft).
+    rewrite source_clause_without_sound.
+    unfold air_left_source.
+    reflexivity.
+  - rewrite <- select_clause_by_flags_sound.
+    rewrite (same_lit_multiset_in_iff l Hright).
+    rewrite source_clause_without_sound.
+    unfold air_right_source.
+    reflexivity.
+Qed.
+
+Lemma trace_current_clause_selection_constraints_sound :
+  forall row l,
+    trace_current_clause_selection_constraints row ->
+    In l (air_current_clause row) <->
+      air_selected_by_flags (air_current_clause row) (air_left_keep_flags row) l \/
+      air_selected_by_flags (air_current_clause row) (air_right_keep_flags row) l.
+Proof.
+  intros row l Hselected.
+  split.
+  - intro Hin.
+    destruct (@in_nth_error_exists lit l (air_current_clause row) Hin) as [slot Hnth].
+    specialize (Hselected slot l Hnth) as [Hleft | Hright].
+    + left. exists slot. split; [exact Hnth| exact Hleft].
+    + right. exists slot. split; [exact Hnth| exact Hright].
+  - intros [[slot [Hnth _]] | [slot [Hnth _]]];
+      apply nth_error_In with (n := slot); exact Hnth.
+Qed.
+
+Lemma count_slots_positive_exists :
+  forall n active,
+    count_slots n active > 0 ->
+    exists slot,
+      slot < n /\ active slot = true.
+Proof.
+  induction n as [| n IH]; intros active Hcount.
+  - simpl in Hcount. lia.
+  - simpl in Hcount.
+    destruct (active n) eqn:Hactive.
+    + exists n. split; [lia| exact Hactive].
+    + simpl in Hcount.
+      assert (count_slots n active > 0) by lia.
+      destruct (IH active H) as [slot [Hslot Hslot_active]].
+      exists slot. split; [lia| exact Hslot_active].
+Qed.
+
+Lemma slot_is_left_pivot_sound :
+  forall row slot,
+    slot_is_left_pivot row slot = true ->
+    nth_error (air_left_clause row) slot = Some (pivot_pos (air_pivot row)).
+Proof.
+  intros row slot Hflag.
+  unfold slot_is_left_pivot, option_lit_eqb in Hflag.
+  destruct (nth_error (air_left_clause row) slot) as [l |] eqn:Hnth;
+    [| discriminate].
+  destruct (lit_eq_dec l (pivot_pos (air_pivot row))) as [Heq | Hneq];
+    [subst; reflexivity| discriminate].
+Qed.
+
+Lemma slot_is_right_neg_pivot_sound :
+  forall row slot,
+    slot_is_right_neg_pivot row slot = true ->
+    nth_error (air_right_clause row) slot = Some (pivot_neg (air_pivot row)).
+Proof.
+  intros row slot Hflag.
+  unfold slot_is_right_neg_pivot, option_lit_eqb in Hflag.
+  destruct (nth_error (air_right_clause row) slot) as [l |] eqn:Hnth;
+    [| discriminate].
+  destruct (lit_eq_dec l (pivot_neg (air_pivot row))) as [Heq | Hneq];
+    [subst; reflexivity| discriminate].
+Qed.
+
+Lemma trace_pivot_count_constraints_sound :
+  forall width row,
+    trace_pivot_count_constraints width row ->
+    In (pivot_pos (air_pivot row)) (air_left_clause row) /\
+    In (pivot_neg (air_pivot row)) (air_right_clause row).
+Proof.
+  intros width row [Hleft_count Hright_count].
+  split.
+  - assert (count_slots width (slot_is_left_pivot row) > 0) by lia.
+    destruct (count_slots_positive_exists width (slot_is_left_pivot row) H)
+      as [slot [_ Hflag]].
+    apply nth_error_In with (n := slot).
+    apply slot_is_left_pivot_sound. exact Hflag.
+  - assert (count_slots width (slot_is_right_neg_pivot row) > 0) by lia.
+    destruct (count_slots_positive_exists width (slot_is_right_neg_pivot row) H)
+      as [slot [_ Hflag]].
+    apply nth_error_In with (n := slot).
+    apply slot_is_right_neg_pivot_sound. exact Hflag.
+Qed.
+
 Definition resolution_air_row_constraints (row : ResolutionAirRow) : Prop :=
   air_is_semantic row = true /\
   air_is_derived row = true /\
@@ -584,18 +785,9 @@ Definition trace_resolution_logic_constraints
   air_entry_id row > air_right_id row /\
   air_left_id row > 0 /\
   air_right_id row > 0 /\
-  In (pivot_pos (air_pivot row)) (air_left_clause row) /\
-  In (pivot_neg (air_pivot row)) (air_right_clause row) /\
-  (forall l,
-      air_selected_by_flags (air_current_clause row) (air_left_keep_flags row) l <->
-        air_left_source row l) /\
-  (forall l,
-      air_selected_by_flags (air_current_clause row) (air_right_keep_flags row) l <->
-        air_right_source row l) /\
-  (forall l,
-      In l (air_current_clause row) <->
-        air_selected_by_flags (air_current_clause row) (air_left_keep_flags row) l \/
-        air_selected_by_flags (air_current_clause row) (air_right_keep_flags row) l).
+  trace_pivot_count_constraints width row /\
+  trace_resolution_multiset_constraints row /\
+  trace_current_clause_selection_constraints row.
 
 Definition resolution_trace_row_constraints
     (width : nat) (trace : resolution_trace_matrix)
@@ -617,8 +809,39 @@ Proof.
   unfold resolution_trace_row_constraints in Htrace.
   destruct Htrace as [_ [_ [_ [_ [_ [_ Hlogic]]]]]].
   unfold trace_resolution_logic_constraints in Hlogic.
-  destruct Hlogic as [_ [_ [_ Hrow]]].
-  exact Hrow.
+  destruct Hlogic as [_ Hlogic].
+  destruct Hlogic as [_ Hlogic].
+  destruct Hlogic as [_ Hlogic].
+  destruct Hlogic as [Hsemantic Hlogic].
+  destruct Hlogic as [Hderived Hlogic].
+  destruct Hlogic as [Hentry_left Hlogic].
+  destruct Hlogic as [Hentry_right Hlogic].
+  destruct Hlogic as [Hleft_id_pos Hlogic].
+  destruct Hlogic as [Hright_id_pos Hlogic].
+  destruct Hlogic as [Hpivot_counts [Hmultisets Hcurrent_selected]].
+  destruct (trace_pivot_count_constraints_sound Hpivot_counts)
+    as [Hleft_pivot Hright_pivot].
+  split; [exact Hsemantic|].
+  split; [exact Hderived|].
+  split; [exact Hentry_left|].
+  split; [exact Hentry_right|].
+  split; [exact Hleft_id_pos|].
+  split; [exact Hright_id_pos|].
+  split; [exact Hleft_pivot|].
+  split; [exact Hright_pivot|].
+  split.
+  - intro l.
+    destruct (@trace_resolution_multiset_constraints_sound row l Hmultisets)
+      as [Hleft _].
+    exact Hleft.
+  - split.
+    + intro l.
+      destruct (@trace_resolution_multiset_constraints_sound row l Hmultisets)
+        as [_ Hright].
+      exact Hright.
+    + intro l.
+      apply trace_current_clause_selection_constraints_sound.
+      exact Hcurrent_selected.
 Qed.
 
 Theorem resolution_air_row_sound :

@@ -22,9 +22,14 @@ trace row at those matrix columns into a `ResolutionAirRow`.
 `resolution_trace_row_constraints` also constrains the auxiliary column blocks
 used by the AIR executor: zero witnesses, pivot equality flags, parent gap
 limbs, inverse/header columns, source/selected prefix counts, and fingerprint
-product accumulators. `resolution_trace_matrix_steps_valid_with_rows_air_sound`
-then proves that these matrix-column constraints imply the previous
-`resolution_air_steps_valid` predicate.
+product accumulators. The resolution membership facts are not assumed directly:
+pivot membership is derived from pivot-count constraints, source/selected
+membership is derived from multiset constraints over the selected current
+literals and the parent clauses with the oriented pivot removed, and current
+clause membership is derived from per-slot keep-flag selection constraints.
+`resolution_trace_matrix_steps_valid_with_rows_air_sound` then proves that
+these matrix-column constraints imply the previous `resolution_air_steps_valid`
+predicate.
 
 This proof intentionally does not formalize finite-field collision bounds for
 the fingerprint products or the STARK/permutation argument. Those belong below
