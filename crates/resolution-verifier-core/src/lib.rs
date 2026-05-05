@@ -372,9 +372,9 @@ fn resolve_clauses(left: &[Lit], right: &[Lit], pivot_var: u32) -> Vec<Lit> {
     let pivot = pivot_var as Lit;
     let mut resolvent = left
         .iter()
-        .chain(right.iter())
         .copied()
-        .filter(|lit| *lit != pivot && *lit != -pivot)
+        .filter(|lit| *lit != pivot)
+        .chain(right.iter().copied().filter(|lit| *lit != -pivot))
         .collect::<Vec<_>>();
     resolvent.sort_unstable_by(canonical_lit_order);
     resolvent.dedup();
@@ -411,6 +411,28 @@ mod tests {
         let mut witness = simple_witness();
         witness.step_resolvent_offsets = vec![0, 1];
         witness.step_resolvent_literals = vec![1];
+        let err = verify_flat_resolution_witness(&witness).unwrap_err();
+        assert_eq!(err, ResolutionVerificationError::BadResolvent { step: 0 });
+    }
+
+    #[test]
+    fn resolution_removes_only_oriented_pivot_literals() {
+        assert_eq!(resolve_clauses(&[1, -1], &[1, -1], 1), vec![-1, 1]);
+    }
+
+    #[test]
+    fn rejects_empty_resolvent_from_tautological_parents() {
+        let witness = FlatResolutionWitness {
+            num_vars: 1,
+            initial_clause_offsets: vec![0, 2, 4],
+            initial_clause_literals: vec![-1, 1, -1, 1],
+            step_left_parents: vec![1],
+            step_right_parents: vec![2],
+            step_pivot_vars: vec![1],
+            step_resolvent_offsets: vec![0, 0],
+            step_resolvent_literals: vec![],
+        };
+
         let err = verify_flat_resolution_witness(&witness).unwrap_err();
         assert_eq!(err, ResolutionVerificationError::BadResolvent { step: 0 });
     }

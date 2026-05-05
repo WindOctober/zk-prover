@@ -808,9 +808,9 @@ fn resolve_clauses(left: &[Lit], right: &[Lit], pivot_var: u32) -> Vec<Lit> {
     let pivot = pivot_var as Lit;
     let mut resolvent = left
         .iter()
-        .chain(right.iter())
         .copied()
-        .filter(|lit| *lit != pivot && *lit != -pivot)
+        .filter(|lit| *lit != pivot)
+        .chain(right.iter().copied().filter(|lit| *lit != -pivot))
         .collect::<Vec<_>>();
     resolvent.sort_unstable();
     resolvent.dedup();
@@ -956,6 +956,30 @@ mod tests {
         let instance = validate_resolution_instance(&unsat_formula(), proof).unwrap();
         assert_eq!(instance.expanded_steps.len(), 1);
         assert!(instance.expanded_steps[0].resolvent.is_empty());
+    }
+
+    #[test]
+    fn resolution_removes_only_oriented_pivot_literals() {
+        assert_eq!(resolve_clauses(&[1, -1], &[1, -1], 1), vec![-1, 1]);
+    }
+
+    #[test]
+    fn rejects_empty_resolvent_from_tautological_parents() {
+        let formula = CnfFormula {
+            num_vars: 1,
+            clauses: vec![vec![-1, 1], vec![-1, 1]],
+        };
+        let proof = ResolutionProof {
+            steps: vec![ResolutionStep {
+                left_parent: 1,
+                right_parent: 2,
+                pivot_var: 1,
+                resolvent: vec![],
+            }],
+        };
+
+        let err = validate_resolution_instance(&formula, proof).unwrap_err();
+        assert!(matches!(err, Phase2Error::BadResolvent { step: 0 }));
     }
 
     #[test]

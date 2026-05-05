@@ -102,27 +102,40 @@ Record ResolutionStep := {
   step_resolvent : clause
 }.
 
+Definition clause_by_id (known : list clause) (id : nat) (c : clause) : Prop :=
+  id > 0 /\ nth_error known (id - 1) = Some c.
+
+Lemma clause_by_id_in :
+  forall known id c,
+    clause_by_id known id c ->
+    In c known.
+Proof.
+  intros known id c [_ Hnth].
+  apply nth_error_In with (n := id - 1). exact Hnth.
+Qed.
+
 Definition pivot_pos (p : var) : lit := Pos p.
 Definition pivot_neg (p : var) : lit := Neg p.
+
+Definition oriented_resolution_member
+    (left right : clause) (pivot : var) (l : lit) : Prop :=
+  (In l left /\ l <> pivot_pos pivot) \/
+  (In l right /\ l <> pivot_neg pivot).
 
 Definition resolves (left right : clause) (pivot : var) (resolvent : clause) : Prop :=
   In (pivot_pos pivot) left /\
   In (pivot_neg pivot) right /\
-  ~ In (pivot_neg pivot) left /\
-  ~ In (pivot_pos pivot) right /\
   forall l,
     In l resolvent <->
-      (In l left \/ In l right) /\
-      l <> pivot_pos pivot /\
-      l <> pivot_neg pivot.
+      oriented_resolution_member left right pivot l.
 
 Fixpoint resolution_steps_valid (known : list clause) (steps : list ResolutionStep) : Prop :=
   match steps with
   | [] => True
   | step :: rest =>
       exists left right,
-        nth_error known (left_parent step) = Some left /\
-        nth_error known (right_parent step) = Some right /\
+        clause_by_id known (left_parent step) left /\
+        clause_by_id known (right_parent step) right /\
         resolves left right (pivot_var step) (step_resolvent step) /\
         resolution_steps_valid (known ++ [step_resolvent step]) rest
   end.
@@ -135,9 +148,122 @@ Definition final_step_empty (steps : list ResolutionStep) : Prop :=
 Definition resolution_refutation (f : cnf) (steps : list ResolutionStep) : Prop :=
   resolution_steps_valid f steps /\ final_step_empty steps.
 
+Record ResolutionAirRow := {
+  air_is_semantic : bool;
+  air_is_derived : bool;
+  air_entry_id : nat;
+  air_left_id : nat;
+  air_right_id : nat;
+  air_pivot : var;
+  air_current_clause : clause;
+  air_left_clause : clause;
+  air_right_clause : clause;
+  air_left_keep_flags : list bool;
+  air_right_keep_flags : list bool
+}.
+
+Definition air_selected_by_flags
+    (c : clause) (flags : list bool) (l : lit) : Prop :=
+  exists slot,
+    nth_error c slot = Some l /\
+    nth_error flags slot = Some true.
+
+Definition air_left_source (row : ResolutionAirRow) (l : lit) : Prop :=
+  In l (air_left_clause row) /\ l <> pivot_pos (air_pivot row).
+
+Definition air_right_source (row : ResolutionAirRow) (l : lit) : Prop :=
+  In l (air_right_clause row) /\ l <> pivot_neg (air_pivot row).
+
+Definition resolution_air_row_constraints (row : ResolutionAirRow) : Prop :=
+  air_is_semantic row = true /\
+  air_is_derived row = true /\
+  air_entry_id row > air_left_id row /\
+  air_entry_id row > air_right_id row /\
+  air_left_id row > 0 /\
+  air_right_id row > 0 /\
+  In (pivot_pos (air_pivot row)) (air_left_clause row) /\
+  In (pivot_neg (air_pivot row)) (air_right_clause row) /\
+  (forall l,
+      air_selected_by_flags (air_current_clause row) (air_left_keep_flags row) l <->
+        air_left_source row l) /\
+  (forall l,
+      air_selected_by_flags (air_current_clause row) (air_right_keep_flags row) l <->
+        air_right_source row l) /\
+  (forall l,
+      In l (air_current_clause row) <->
+        air_selected_by_flags (air_current_clause row) (air_left_keep_flags row) l \/
+        air_selected_by_flags (air_current_clause row) (air_right_keep_flags row) l).
+
+Theorem resolution_air_row_sound :
+  forall row,
+    resolution_air_row_constraints row ->
+    resolves
+      (air_left_clause row)
+      (air_right_clause row)
+      (air_pivot row)
+      (air_current_clause row).
+Proof.
+  intros row Hrow.
+  destruct Hrow as [_ [_ [_ [_ [_ [_ [Hleft_pivot [Hright_pivot
+    [Hleft_flags [Hright_flags Hcurrent]]]]]]]]]].
+  split; [exact Hleft_pivot|].
+  split; [exact Hright_pivot|].
+  intro lit0.
+  rewrite Hcurrent, Hleft_flags, Hright_flags.
+  unfold oriented_resolution_member, air_left_source, air_right_source.
+  reflexivity.
+Qed.
+
+Definition resolution_air_row_for_step
+    (step : ResolutionStep) (row : ResolutionAirRow) : Prop :=
+  air_is_derived row = true /\
+  air_left_id row = left_parent step /\
+  air_right_id row = right_parent step /\
+  air_pivot row = pivot_var step /\
+  air_current_clause row = step_resolvent step.
+
+Fixpoint resolution_air_steps_valid
+    (known : list clause) (steps : list ResolutionStep) (rows : list ResolutionAirRow) : Prop :=
+  match steps, rows with
+  | [], _ => True
+  | _ :: _, [] => False
+  | step :: rest, row :: row_rest =>
+      resolution_air_row_for_step step row /\
+      resolution_air_row_constraints row /\
+      clause_by_id known (left_parent step) (air_left_clause row) /\
+      clause_by_id known (right_parent step) (air_right_clause row) /\
+      resolution_air_steps_valid (known ++ [step_resolvent step]) rest row_rest
+  end.
+
+Theorem resolution_air_steps_sound :
+  forall known steps rows,
+    resolution_air_steps_valid known steps rows ->
+    resolution_steps_valid known steps.
+Proof.
+  intros known steps.
+  revert known.
+  induction steps as [| step rest IH]; intros known rows Hair.
+  - simpl. exact I.
+  - destruct rows as [| row row_rest]; [contradiction|].
+    simpl in Hair.
+    destruct Hair as [Hfor_step [Hrow [Hleft_id [Hright_id Hrest]]]].
+    destruct Hfor_step as [_ [Hleft_eq [Hright_eq [Hpivot_eq Hres_eq]]]].
+    exists (air_left_clause row), (air_right_clause row).
+    split.
+    + exact Hleft_id.
+    + split.
+      * exact Hright_id.
+      * split.
+        -- rewrite <- Hpivot_eq, <- Hres_eq.
+           apply resolution_air_row_sound. exact Hrow.
+        -- apply (IH (known ++ [step_resolvent step]) row_rest).
+           exact Hrest.
+Qed.
+
 Record UnsatCircuitWitness := {
   unsat_steps : list ResolutionStep;
-  clause_matrix : matrix lit
+  clause_matrix : matrix lit;
+  resolution_air_rows : list ResolutionAirRow
 }.
 
 Definition row_encodes_clause (m : matrix lit) (row : nat) (c : clause) : Prop :=
@@ -154,7 +280,7 @@ Definition resolution_matrix_encodes
 
 Definition unsat_circuit_constraints (f : cnf) (w : UnsatCircuitWitness) : Prop :=
   resolution_matrix_encodes f (unsat_steps w) (clause_matrix w) /\
-  resolution_steps_valid f (unsat_steps w) /\
+  resolution_air_steps_valid f (unsat_steps w) (resolution_air_rows w) /\
   final_step_empty (unsat_steps w).
 
 Theorem unsat_constraints_sound_refutation :
@@ -163,7 +289,10 @@ Theorem unsat_constraints_sound_refutation :
     resolution_refutation f (unsat_steps w).
 Proof.
   intros f w [_ [Hsteps Hempty]].
-  split; assumption.
+  split.
+  - apply resolution_air_steps_sound with (rows := resolution_air_rows w).
+    exact Hsteps.
+  - exact Hempty.
 Qed.
 
 Lemma nth_error_some_in :
@@ -193,7 +322,7 @@ Lemma resolve_preserves_clause_holds :
     clause_holds a resolvent.
 Proof.
   intros a left right pivot resolvent Hres Hleft Hright.
-  destruct Hres as [Hleft_pivot [Hright_pivot [Hleft_clean [Hright_clean Hmembers]]]].
+  destruct Hres as [Hleft_pivot [Hright_pivot Hmembers]].
   destruct Hleft as [jl [ll [Hll_nth Hll_true]]].
   destruct Hright as [jr [lr [Hlr_nth Hlr_true]]].
   pose proof (@nth_error_some_in lit left jl ll Hll_nth) as Hll_in.
@@ -203,22 +332,15 @@ Proof.
     destruct (lit_eq_dec lr (pivot_neg pivot)) as [Hlr_pivot | Hlr_not_neg].
     + subst lr.
       exfalso. eapply lit_eval_pivot_contradiction; eauto.
-    + assert (Hlr_not_pos : lr <> pivot_pos pivot).
-      { intro Hbad. apply Hright_clean. subst lr. exact Hlr_in. }
+    +
       assert (Hin_res : In lr resolvent).
       { apply (proj2 (Hmembers lr)).
-        split.
-        - right. exact Hlr_in.
-        - split; assumption. }
+        right. split; assumption. }
       destruct (@in_nth_error_exists lit lr resolvent Hin_res) as [j Hj].
       exists j, lr. split; assumption.
-  - assert (Hll_not_neg : ll <> pivot_neg pivot).
-    { intro Hbad. apply Hleft_clean. subst ll. exact Hll_in. }
-    assert (Hin_res : In ll resolvent).
+  - assert (Hin_res : In ll resolvent).
     { apply (proj2 (Hmembers ll)).
-      split.
-      - left. exact Hll_in.
-      - split; assumption. }
+      left. split; assumption. }
     destruct (@in_nth_error_exists lit ll resolvent Hin_res) as [j Hj].
     exists j, ll. split; assumption.
 Qed.
@@ -259,8 +381,8 @@ Proof.
   - simpl. rewrite app_nil_r. exact Hknown.
   - simpl in Hvalid.
     destruct Hvalid as [left [right [Hleft_id [Hright_id [Hres Hrest]]]]].
-    pose proof (@nth_error_some_in clause known (left_parent step) left Hleft_id) as Hleft_in.
-    pose proof (@nth_error_some_in clause known (right_parent step) right Hright_id) as Hright_in.
+    pose proof (clause_by_id_in Hleft_id) as Hleft_in.
+    pose proof (clause_by_id_in Hright_id) as Hright_in.
     pose proof (Hknown left Hleft_in) as Hleft_holds.
     pose proof (Hknown right Hright_in) as Hright_holds.
     pose proof (resolve_preserves_clause_holds Hres Hleft_holds Hright_holds)

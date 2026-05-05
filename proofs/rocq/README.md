@@ -13,6 +13,13 @@ Instead it proves that:
   resolution refutation.
 - A valid resolution refutation rules out every satisfying assignment.
 
+The UNSAT side models the source verifier's one-based `clause_by_id` parent
+lookup and the Plonky3 AIR's oriented resolution rows: the left parent drops
+only the positive pivot literal, and the right parent drops only the negative
+pivot literal. The row-level keep/source constraints are represented as
+logical multiset membership constraints over the current, left, and right
+clause blocks.
+
 The proof uses no `Axiom` and no `Admitted`.
 
 ## Local Build
