@@ -439,6 +439,20 @@ Definition trace_current_clause_selection_constraints (row : ResolutionAirRow) :
     nth_error (air_left_keep_flags row) slot = Some true \/
     nth_error (air_right_keep_flags row) slot = Some true.
 
+Definition trace_current_keep_gate_constraints
+    (width : nat) (row : ResolutionAirRow) : Prop :=
+  forall slot,
+    slot < width ->
+    bool_to_nat (slot_is_left_selected row slot) *
+      bool_to_nat (option_lit_is_zero (nth_error (air_current_clause row) slot)) = 0 /\
+    bool_to_nat (slot_is_right_selected row slot) *
+      bool_to_nat (option_lit_is_zero (nth_error (air_current_clause row) slot)) = 0 /\
+    bool_to_nat (air_is_derived row) *
+      bool_to_nat (negb (option_lit_is_zero
+        (nth_error (air_current_clause row) slot))) *
+      bool_to_nat (negb (slot_is_left_selected row slot)) *
+      bool_to_nat (negb (slot_is_right_selected row slot)) = 0.
+
 Definition trace_pivot_count_constraints (width : nat) (row : ResolutionAirRow) : Prop :=
   count_slots width (slot_is_left_pivot row) = 1 /\
   count_slots width (slot_is_right_neg_pivot row) = 1.
@@ -702,6 +716,32 @@ Proof.
   - apply IH. exact Hnth.
 Qed.
 
+Lemma trace_current_keep_gate_constraints_sound :
+  forall width row,
+    air_is_derived row = true ->
+    length (air_current_clause row) <= width ->
+    trace_current_keep_gate_constraints width row ->
+    trace_current_clause_selection_constraints row.
+Proof.
+  intros width row Hderived Hlen_current Hkeep slot l Hcurrent.
+  assert (slot < width) as Hslot_width.
+  { assert (slot < length (air_current_clause row)) as Hslot_len.
+    { apply nth_error_Some. rewrite Hcurrent. discriminate. }
+    lia. }
+  specialize (Hkeep slot Hslot_width) as [_ [_ Hnonzero_selected]].
+  unfold option_lit_is_zero in Hnonzero_selected.
+  rewrite Hcurrent in Hnonzero_selected.
+  unfold bool_to_nat in Hnonzero_selected.
+  rewrite Hderived in Hnonzero_selected.
+  destruct (slot_is_left_selected row slot) eqn:Hleft_selected.
+  - left. unfold slot_is_left_selected in Hleft_selected.
+    apply nth_true_nth_error. exact Hleft_selected.
+  - destruct (slot_is_right_selected row slot) eqn:Hright_selected.
+    + right. unfold slot_is_right_selected in Hright_selected.
+      apply nth_true_nth_error. exact Hright_selected.
+    + simpl in Hnonzero_selected. discriminate.
+Qed.
+
 Lemma selected_count_active_value_sound :
   forall n active value_at l,
     selected_count n active value_at l > 0 <->
@@ -943,7 +983,7 @@ Definition trace_resolution_logic_constraints
   air_right_id row > 0 /\
   trace_pivot_count_constraints width row /\
   trace_count_product_final_constraints width row /\
-  trace_current_clause_selection_constraints row.
+  trace_current_keep_gate_constraints width row.
 
 Definition resolution_trace_row_constraints
     (width : nat) (trace : resolution_trace_matrix)
@@ -974,9 +1014,11 @@ Proof.
   destruct Hlogic as [Hentry_right Hlogic].
   destruct Hlogic as [Hleft_id_pos Hlogic].
   destruct Hlogic as [Hright_id_pos Hlogic].
-  destruct Hlogic as [Hpivot_counts [Hcount_product_final Hcurrent_selected]].
+  destruct Hlogic as [Hpivot_counts [Hcount_product_final Hcurrent_keep_gates]].
   destruct (trace_pivot_count_constraints_sound Hpivot_counts)
     as [Hleft_pivot Hright_pivot].
+  pose proof (@trace_current_keep_gate_constraints_sound
+    width row Hderived Hlen_current Hcurrent_keep_gates) as Hcurrent_selected.
   split; [exact Hsemantic|].
   split; [exact Hderived|].
   split; [exact Hentry_left|].

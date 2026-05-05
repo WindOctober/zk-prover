@@ -26,7 +26,8 @@ product accumulators. The resolution membership facts are not assumed directly:
 pivot membership is derived from pivot-count constraints, source/selected
 membership is derived from the AIR-style source/selected count and fingerprint
 accumulator final equalities, and current clause membership is derived from
-per-slot keep-flag selection constraints.
+the AIR keep gate forcing each nonzero current literal to be selected by a
+left or right keep flag.
 `resolution_trace_matrix_steps_valid_with_rows_air_sound` then proves that
 these matrix-column constraints imply the previous `resolution_air_steps_valid`
 predicate.
