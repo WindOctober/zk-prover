@@ -31,6 +31,15 @@ clause membership is derived from per-slot keep-flag selection constraints.
 these matrix-column constraints imply the previous `resolution_air_steps_valid`
 predicate.
 
+Parent lookup is also kept at the matrix/permutation boundary rather than
+assumed as a logical `clause_by_id` fact. `resolution_clause_bus_constraints`
+models the source AIR's clause bus tuples `(clause_id, literals...)`: a
+derived row's current, left-parent, and right-parent clause blocks must match
+the corresponding rows of `clause_matrix`. The soundness proof uses
+`resolution_matrix_encodes` for the initial formula rows and extends the known
+matrix rows with each derived current clause, deriving the logical
+`clause_by_id` parent facts from those bus constraints.
+
 This proof intentionally does not formalize finite-field collision bounds for
 the fingerprint products or the STARK/permutation argument. Those belong below
 the matrix/constraint boundary; here they are represented as explicit

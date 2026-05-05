@@ -291,6 +291,9 @@ Definition trace_lit
     (trace : resolution_trace_matrix) (row col : nat) (value : option lit) : Prop :=
   trace row col = Some (CellLit value).
 
+Definition row_encodes_clause (m : matrix lit) (row : nat) (c : clause) : Prop :=
+  forall col, m row col = nth_error c col.
+
 Definition trace_clause_block
     (trace : resolution_trace_matrix)
     (row base width : nat)
@@ -419,6 +422,12 @@ Definition trace_current_clause_selection_constraints (row : ResolutionAirRow) :
 Definition trace_pivot_count_constraints (width : nat) (row : ResolutionAirRow) : Prop :=
   count_slots width (slot_is_left_pivot row) = 1 /\
   count_slots width (slot_is_right_neg_pivot row) = 1.
+
+Definition resolution_clause_bus_constraints
+    (m : matrix lit) (row : ResolutionAirRow) : Prop :=
+  row_encodes_clause m (air_entry_id row - 1) (air_current_clause row) /\
+  row_encodes_clause m (air_left_id row - 1) (air_left_clause row) /\
+  row_encodes_clause m (air_right_id row - 1) (air_right_clause row).
 
 Definition trace_row_extracts_air
     (width : nat) (trace : resolution_trace_matrix)
@@ -910,7 +919,77 @@ Proof.
            exact Hrest.
 Qed.
 
+Definition matrix_rows_encode_known (m : matrix lit) (known : list clause) : Prop :=
+  forall row c,
+    nth_error known row = Some c ->
+    row_encodes_clause m row c.
+
+Lemma row_encodes_clause_ext :
+  forall m row c1 c2,
+    row_encodes_clause m row c1 ->
+    row_encodes_clause m row c2 ->
+    c1 = c2.
+Proof.
+  intros m row c1 c2 Hc1 Hc2.
+  apply nth_error_ext. intro col.
+  rewrite <- Hc1, <- Hc2. reflexivity.
+Qed.
+
+Lemma nth_error_exists_of_lt :
+  forall (A : Type) (xs : list A) n,
+    n < length xs ->
+    exists x, nth_error xs n = Some x.
+Proof.
+  intros A xs n Hlt.
+  destruct (nth_error xs n) as [x |] eqn:Hnth.
+  - exists x. reflexivity.
+  - apply nth_error_None in Hnth. lia.
+Qed.
+
+Lemma matrix_rows_encode_known_clause_by_id :
+  forall m known id c,
+    matrix_rows_encode_known m known ->
+    id > 0 ->
+    id <= length known ->
+    row_encodes_clause m (id - 1) c ->
+    clause_by_id known id c.
+Proof.
+  intros m known id c Hknown Hid_pos Hid_bound Hrow.
+  split; [exact Hid_pos|].
+  destruct (@nth_error_exists_of_lt clause known (id - 1)) as [known_c Hknown_c].
+  - lia.
+  - specialize (Hknown (id - 1) known_c Hknown_c) as Hknown_row.
+    assert (c = known_c) as Heq.
+    { apply row_encodes_clause_ext with (m := m) (row := id - 1);
+        assumption. }
+    subst c. exact Hknown_c.
+Qed.
+
+Lemma matrix_rows_encode_known_snoc :
+  forall m known c,
+    matrix_rows_encode_known m known ->
+    row_encodes_clause m (length known) c ->
+    matrix_rows_encode_known m (known ++ [c]).
+Proof.
+  intros m known c Hknown Hcurrent row c' Hnth.
+  destruct (row <? length known) eqn:Hrow_lt.
+  - apply Nat.ltb_lt in Hrow_lt.
+    rewrite nth_error_app1 in Hnth by exact Hrow_lt.
+    apply Hknown. exact Hnth.
+  - apply Nat.ltb_ge in Hrow_lt.
+    pose proof Hnth as Hnth_app.
+    rewrite nth_error_app2 in Hnth by lia.
+    destruct (row - length known) as [| extra] eqn:Hdiff.
+    + inversion Hnth. subst c'.
+      assert (row = length known) by lia.
+      subst row. exact Hcurrent.
+    + assert (row < length (known ++ [c])) as Hrow_bound.
+      { apply nth_error_Some. rewrite Hnth_app. discriminate. }
+      rewrite length_app in Hrow_bound. simpl in Hrow_bound. lia.
+Qed.
+
 Definition resolution_trace_matrix_step_constraints
+    (m : matrix lit)
     (known : list clause)
     (row_index width : nat)
     (trace : resolution_trace_matrix)
@@ -918,11 +997,12 @@ Definition resolution_trace_matrix_step_constraints
   exists row,
     trace_row_extracts_air width trace row_index row /\
     resolution_air_row_for_step step row /\
+    air_entry_id row = S (length known) /\
     resolution_trace_row_constraints width trace row_index row /\
-    clause_by_id known (left_parent step) (air_left_clause row) /\
-    clause_by_id known (right_parent step) (air_right_clause row).
+    resolution_clause_bus_constraints m row.
 
 Fixpoint resolution_trace_matrix_steps_valid
+    (m : matrix lit)
     (known : list clause)
     (row_index width : nat)
     (trace : resolution_trace_matrix)
@@ -930,12 +1010,13 @@ Fixpoint resolution_trace_matrix_steps_valid
   match steps with
   | [] => True
   | step :: rest =>
-      resolution_trace_matrix_step_constraints known row_index width trace step /\
+      resolution_trace_matrix_step_constraints m known row_index width trace step /\
       resolution_trace_matrix_steps_valid
-        (known ++ [step_resolvent step]) (S row_index) width trace rest
+        m (known ++ [step_resolvent step]) (S row_index) width trace rest
   end.
 
 Fixpoint resolution_trace_matrix_steps_valid_with_rows
+    (m : matrix lit)
     (known : list clause)
     (row_index width : nat)
     (trace : resolution_trace_matrix)
@@ -947,21 +1028,21 @@ Fixpoint resolution_trace_matrix_steps_valid_with_rows
   | step :: rest, row :: row_rest =>
       trace_row_extracts_air width trace row_index row /\
       resolution_air_row_for_step step row /\
+      air_entry_id row = S (length known) /\
       resolution_trace_row_constraints width trace row_index row /\
-      clause_by_id known (left_parent step) (air_left_clause row) /\
-      clause_by_id known (right_parent step) (air_right_clause row) /\
+      resolution_clause_bus_constraints m row /\
       resolution_trace_matrix_steps_valid_with_rows
-        (known ++ [step_resolvent step]) (S row_index) width trace rest row_rest
+        m (known ++ [step_resolvent step]) (S row_index) width trace rest row_rest
   end.
 
 Theorem resolution_trace_matrix_steps_pick_rows :
-  forall known steps row_index width trace,
-    resolution_trace_matrix_steps_valid known row_index width trace steps ->
+  forall m known steps row_index width trace,
+    resolution_trace_matrix_steps_valid m known row_index width trace steps ->
     exists rows,
       resolution_trace_matrix_steps_valid_with_rows
-        known row_index width trace steps rows.
+        m known row_index width trace steps rows.
 Proof.
-  intros known steps.
+  intros m known steps.
   revert known.
   induction steps as [| step rest IH]; intros known row_index width trace Hmatrix.
   - exists []. exact I.
@@ -971,63 +1052,95 @@ Proof.
       as [rows Hrows].
     exists (row :: rows).
     simpl.
-    destruct Hstep as [Hextract [Hfor_step [Htrace_row [Hleft_id Hright_id]]]].
+    destruct Hstep as [Hextract [Hfor_step [Hentry [Htrace_row Hbus]]]].
     split; [exact Hextract|].
     split; [exact Hfor_step|].
+    split; [exact Hentry|].
     split; [exact Htrace_row|].
-    split; [exact Hleft_id|].
-    split; [exact Hright_id|].
+    split; [exact Hbus|].
     exact Hrows.
 Qed.
 
 Theorem resolution_trace_matrix_steps_valid_with_rows_air_sound :
-  forall known steps rows row_index width trace,
+  forall m known steps rows row_index width trace,
+    matrix_rows_encode_known m known ->
     resolution_trace_matrix_steps_valid_with_rows
-      known row_index width trace steps rows ->
+      m known row_index width trace steps rows ->
     resolution_air_steps_valid known steps rows.
 Proof.
-  intros known steps.
+  intros m known steps.
   revert known.
-  induction steps as [| step rest IH]; intros known rows row_index width trace.
+  induction steps as [| step rest IH]; intros known rows row_index width trace Hknown.
   - simpl. exact (fun _ => I).
   - destruct rows as [| row row_rest].
     + simpl. intro H. contradiction.
     + simpl.
-      intros [_ [Hfor_step [Htrace_row [Hleft_id [Hright_id Hrest]]]]].
+      intros [_ [Hfor_step [Hentry [Htrace_row [Hbus Hrest]]]]].
+      destruct Hbus as [Hcurrent_bus [Hleft_bus Hright_bus]].
+      pose proof (resolution_trace_row_constraints_sound Htrace_row) as Hair_row.
+      destruct Hair_row as [_ [_ [Hentry_left [Hentry_right
+        [Hleft_id_pos [Hright_id_pos _]]]]]].
+      assert (air_left_id row <= length known) as Hleft_bound by lia.
+      assert (air_right_id row <= length known) as Hright_bound by lia.
+      assert (clause_by_id known (left_parent step) (air_left_clause row))
+        as Hleft_id.
+      { destruct Hfor_step as [_ [Hleft_eq _]].
+        rewrite <- Hleft_eq.
+        apply matrix_rows_encode_known_clause_by_id with (m := m).
+        - exact Hknown.
+        - exact Hleft_id_pos.
+        - exact Hleft_bound.
+        - exact Hleft_bus. }
+      assert (clause_by_id known (right_parent step) (air_right_clause row))
+        as Hright_id.
+      { destruct Hfor_step as [_ [_ [Hright_eq _]]].
+        rewrite <- Hright_eq.
+        apply matrix_rows_encode_known_clause_by_id with (m := m).
+        - exact Hknown.
+        - exact Hright_id_pos.
+        - exact Hright_bound.
+        - exact Hright_bus. }
       split; [exact Hfor_step|].
       split.
-      * apply resolution_trace_row_constraints_sound with
-          (width := width) (trace := trace) (row_index := row_index).
-        exact Htrace_row.
+      * exact (resolution_trace_row_constraints_sound Htrace_row).
       * split; [exact Hleft_id|].
         split; [exact Hright_id|].
         apply (IH (known ++ [step_resolvent step])
           row_rest (S row_index) width trace).
-        exact Hrest.
+        -- apply matrix_rows_encode_known_snoc.
+           ++ exact Hknown.
+           ++ destruct Hfor_step as [_ [_ [_ [_ Hcurrent_eq]]]].
+              rewrite <- Hcurrent_eq.
+              replace (length known) with (air_entry_id row - 1) by lia.
+              exact Hcurrent_bus.
+        -- exact Hrest.
 Qed.
 
 Theorem resolution_trace_matrix_steps_air_sound :
-  forall known steps row_index width trace,
-    resolution_trace_matrix_steps_valid known row_index width trace steps ->
+  forall m known steps row_index width trace,
+    matrix_rows_encode_known m known ->
+    resolution_trace_matrix_steps_valid m known row_index width trace steps ->
     exists rows, resolution_air_steps_valid known steps rows.
 Proof.
-  intros known steps row_index width trace Hmatrix.
+  intros m known steps row_index width trace Hknown Hmatrix.
   destruct (resolution_trace_matrix_steps_pick_rows
-    known steps row_index width trace Hmatrix) as [rows Hrows].
+    m known steps row_index width trace Hmatrix) as [rows Hrows].
   exists rows.
   apply resolution_trace_matrix_steps_valid_with_rows_air_sound with
-    (row_index := row_index) (width := width) (trace := trace).
-  exact Hrows.
+    (m := m) (row_index := row_index) (width := width) (trace := trace).
+  - exact Hknown.
+  - exact Hrows.
 Qed.
 
 Theorem resolution_trace_matrix_steps_sound :
-  forall known steps row_index width trace,
-    resolution_trace_matrix_steps_valid known row_index width trace steps ->
+  forall m known steps row_index width trace,
+    matrix_rows_encode_known m known ->
+    resolution_trace_matrix_steps_valid m known row_index width trace steps ->
     resolution_steps_valid known steps.
 Proof.
-  intros known steps row_index width trace Hmatrix.
-  destruct (resolution_trace_matrix_steps_air_sound
-    known steps row_index width trace Hmatrix) as [rows Hair].
+  intros m known steps row_index width trace Hknown Hmatrix.
+  destruct (@resolution_trace_matrix_steps_air_sound
+    m known steps row_index width trace Hknown Hmatrix) as [rows Hair].
   apply resolution_air_steps_sound with (rows := rows).
   exact Hair.
 Qed.
@@ -1039,9 +1152,6 @@ Record UnsatCircuitWitness := {
   resolution_trace : resolution_trace_matrix
 }.
 
-Definition row_encodes_clause (m : matrix lit) (row : nat) (c : clause) : Prop :=
-  forall col, m row col = nth_error c col.
-
 Definition resolution_matrix_encodes
     (f : cnf) (steps : list ResolutionStep) (m : matrix lit) : Prop :=
   (forall row c,
@@ -1051,9 +1161,19 @@ Definition resolution_matrix_encodes
       nth_error steps k = Some step ->
       row_encodes_clause m (length f + k) (step_resolvent step)).
 
+Lemma resolution_matrix_encodes_initial_known :
+  forall f steps m,
+    resolution_matrix_encodes f steps m ->
+    matrix_rows_encode_known m f.
+Proof.
+  intros f steps m [Hformula _] row c Hnth.
+  apply Hformula. exact Hnth.
+Qed.
+
 Definition unsat_circuit_constraints (f : cnf) (w : UnsatCircuitWitness) : Prop :=
   resolution_matrix_encodes f (unsat_steps w) (clause_matrix w) /\
   resolution_trace_matrix_steps_valid
+    (clause_matrix w)
     f
     (length f)
     (resolution_trace_width_bound w)
@@ -1066,13 +1186,17 @@ Theorem unsat_constraints_sound_refutation :
     unsat_circuit_constraints f w ->
     resolution_refutation f (unsat_steps w).
 Proof.
-  intros f w [_ [Hsteps Hempty]].
+  intros f w [Hmatrix [Hsteps Hempty]].
   split.
   - apply resolution_trace_matrix_steps_sound with
+      (m := clause_matrix w)
       (row_index := length f)
       (width := resolution_trace_width_bound w)
       (trace := resolution_trace w).
-    exact Hsteps.
+    + apply resolution_matrix_encodes_initial_known with
+        (steps := unsat_steps w).
+      exact Hmatrix.
+    + exact Hsteps.
   - exact Hempty.
 Qed.
 
