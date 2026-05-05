@@ -389,29 +389,49 @@ Definition slot_is_left_selected (row : ResolutionAirRow) (slot : nat) : bool :=
 Definition slot_is_right_selected (row : ResolutionAirRow) (slot : nat) : bool :=
   nth slot (air_right_keep_flags row) false.
 
-Fixpoint select_clause_by_flags (c : clause) (flags : list bool) : clause :=
-  match c, flags with
-  | l :: c_tail, true :: flags_tail =>
-      l :: select_clause_by_flags c_tail flags_tail
-  | _ :: c_tail, false :: flags_tail =>
-      select_clause_by_flags c_tail flags_tail
-  | _, _ => []
-  end.
+Definition selected_count
+    (n : nat) (active : nat -> bool) (value_at : nat -> option lit)
+    (target : lit) : nat :=
+  count_slots n
+    (fun slot =>
+      if active slot then option_lit_eqb (value_at slot) target else false).
 
-Definition source_clause_without (pivot : lit) (c : clause) : clause :=
-  filter (fun l => if lit_eq_dec l pivot then false else true) c.
+Definition fingerprint_product := lit -> nat.
 
-Definition same_lit_multiset (left right : clause) : Prop :=
-  forall l,
-    count_occ lit_eq_dec left l = count_occ lit_eq_dec right l.
+Definition fingerprint_slots
+    (n : nat) (active : nat -> bool) (value_at : nat -> option lit)
+    : fingerprint_product :=
+  fun l => selected_count n active value_at l.
 
-Definition trace_resolution_multiset_constraints (row : ResolutionAirRow) : Prop :=
-  same_lit_multiset
-    (select_clause_by_flags (air_current_clause row) (air_left_keep_flags row))
-    (source_clause_without (pivot_pos (air_pivot row)) (air_left_clause row)) /\
-  same_lit_multiset
-    (select_clause_by_flags (air_current_clause row) (air_right_keep_flags row))
-    (source_clause_without (pivot_neg (air_pivot row)) (air_right_clause row)).
+Definition same_fingerprint_product
+    (left right : fingerprint_product) : Prop :=
+  forall l, left l = right l.
+
+Definition trace_count_product_final_constraints
+    (width : nat) (row : ResolutionAirRow) : Prop :=
+  width > 0 /\
+  count_slots width (slot_is_left_source row) =
+    count_slots width (slot_is_left_selected row) /\
+  count_slots width (slot_is_right_source row) =
+    count_slots width (slot_is_right_selected row) /\
+  same_fingerprint_product
+    (fingerprint_slots
+      width
+      (slot_is_left_source row)
+      (fun slot => nth_error (air_left_clause row) slot))
+    (fingerprint_slots
+      width
+      (slot_is_left_selected row)
+      (fun slot => nth_error (air_current_clause row) slot)) /\
+  same_fingerprint_product
+    (fingerprint_slots
+      width
+      (slot_is_right_source row)
+      (fun slot => nth_error (air_right_clause row) slot))
+    (fingerprint_slots
+      width
+      (slot_is_right_selected row)
+      (fun slot => nth_error (air_current_clause row) slot)).
 
 Definition trace_current_clause_selection_constraints (row : ResolutionAirRow) : Prop :=
   forall slot l,
@@ -596,92 +616,6 @@ Definition air_left_source (row : ResolutionAirRow) (l : lit) : Prop :=
 Definition air_right_source (row : ResolutionAirRow) (l : lit) : Prop :=
   In l (air_right_clause row) /\ l <> pivot_neg (air_pivot row).
 
-Lemma select_clause_by_flags_sound :
-  forall c flags l,
-    In l (select_clause_by_flags c flags) <->
-      air_selected_by_flags c flags l.
-Proof.
-  induction c as [| x xs IH]; intros flags l.
-  - simpl. split.
-    + intro H. contradiction.
-    + intros [slot [Hnth _]]. destruct slot; discriminate.
-  - destruct flags as [| flag flags_tail].
-    + simpl. split.
-      * intro H. contradiction.
-      * intros [slot [_ Hflag]]. destruct slot; discriminate.
-    + destruct flag.
-      * simpl. split.
-        -- intros [Heq | Hin].
-           ++ subst. exists 0. split; reflexivity.
-           ++ rewrite IH in Hin.
-              destruct Hin as [slot [Hnth Hflag]].
-              exists (S slot). split; exact Hnth || exact Hflag.
-        -- intros [slot [Hnth Hflag]].
-           destruct slot as [| slot].
-           ++ simpl in Hnth. inversion Hnth. left. reflexivity.
-           ++ right. rewrite IH. exists slot. split; exact Hnth || exact Hflag.
-      * simpl. split.
-        -- intro Hin.
-           rewrite IH in Hin.
-           destruct Hin as [slot [Hnth Hflag]].
-           exists (S slot). split; exact Hnth || exact Hflag.
-        -- intros [slot [Hnth Hflag]].
-           destruct slot as [| slot].
-           ++ simpl in Hflag. discriminate.
-           ++ rewrite IH. exists slot. split; exact Hnth || exact Hflag.
-Qed.
-
-Lemma source_clause_without_sound :
-  forall pivot c l,
-    In l (source_clause_without pivot c) <->
-      In l c /\ l <> pivot.
-Proof.
-  intros pivot c l.
-  unfold source_clause_without.
-  rewrite filter_In.
-  destruct (lit_eq_dec l pivot) as [Heq | Hneq].
-  - subst. split.
-    + intros [_ Hfalse]. discriminate.
-    + intros [_ Hneq]. contradiction.
-  - split.
-    + intros [Hin _]. split; [exact Hin| exact Hneq].
-    + intros [Hin _]. split; [exact Hin| reflexivity].
-Qed.
-
-Lemma same_lit_multiset_in_iff :
-  forall left right l,
-    same_lit_multiset left right ->
-    (In l left <-> In l right).
-Proof.
-  intros left right l Hsame.
-  rewrite (@count_occ_In lit lit_eq_dec left l).
-  rewrite (@count_occ_In lit lit_eq_dec right l).
-  rewrite Hsame.
-  reflexivity.
-Qed.
-
-Lemma trace_resolution_multiset_constraints_sound :
-  forall row l,
-    trace_resolution_multiset_constraints row ->
-    (air_selected_by_flags (air_current_clause row) (air_left_keep_flags row) l <->
-      air_left_source row l) /\
-    (air_selected_by_flags (air_current_clause row) (air_right_keep_flags row) l <->
-      air_right_source row l).
-Proof.
-  intros row l [Hleft Hright].
-  split.
-  - rewrite <- select_clause_by_flags_sound.
-    rewrite (same_lit_multiset_in_iff l Hleft).
-    rewrite source_clause_without_sound.
-    unfold air_left_source.
-    reflexivity.
-  - rewrite <- select_clause_by_flags_sound.
-    rewrite (same_lit_multiset_in_iff l Hright).
-    rewrite source_clause_without_sound.
-    unfold air_right_source.
-    reflexivity.
-Qed.
-
 Lemma trace_current_clause_selection_constraints_sound :
   forall row l,
     trace_current_clause_selection_constraints row ->
@@ -700,6 +634,22 @@ Proof.
       apply nth_error_In with (n := slot); exact Hnth.
 Qed.
 
+Lemma count_slots_true_positive :
+  forall n active slot,
+    slot < n ->
+    active slot = true ->
+    count_slots n active > 0.
+Proof.
+  induction n as [| n IH]; intros active slot Hlt Hactive.
+  - lia.
+  - simpl.
+    destruct (Nat.eq_dec slot n) as [Heq | Hneq].
+    + subst slot. rewrite Hactive. unfold bool_to_nat. lia.
+    + assert (slot < n) as Hslot_lt by lia.
+      specialize (IH active slot Hslot_lt Hactive).
+      destruct (active n); simpl; lia.
+Qed.
+
 Lemma count_slots_positive_exists :
   forall n active,
     count_slots n active > 0 ->
@@ -715,6 +665,203 @@ Proof.
       assert (count_slots n active > 0) by lia.
       destruct (IH active H) as [slot [Hslot Hslot_active]].
       exists slot. split; [lia| exact Hslot_active].
+Qed.
+
+Lemma option_lit_eqb_true :
+  forall value l,
+    option_lit_eqb value l = true ->
+    value = Some l.
+Proof.
+  intros value l Hflag.
+  unfold option_lit_eqb in Hflag.
+  destruct value as [x |]; [| discriminate].
+  destruct (lit_eq_dec x l) as [Heq | Hneq].
+  - subst. reflexivity.
+  - discriminate.
+Qed.
+
+Lemma nth_error_true_nth :
+  forall flags slot,
+    nth_error flags slot = Some true ->
+    nth slot flags false = true.
+Proof.
+  induction flags as [| flag flags_tail IH]; intros [| slot] Hnth;
+    simpl in *; try discriminate.
+  - inversion Hnth. reflexivity.
+  - apply IH. exact Hnth.
+Qed.
+
+Lemma nth_true_nth_error :
+  forall flags slot,
+    nth slot flags false = true ->
+    nth_error flags slot = Some true.
+Proof.
+  induction flags as [| flag flags_tail IH]; intros [| slot] Hnth;
+    simpl in *; try discriminate.
+  - destruct flag; [reflexivity| discriminate].
+  - apply IH. exact Hnth.
+Qed.
+
+Lemma selected_count_active_value_sound :
+  forall n active value_at l,
+    selected_count n active value_at l > 0 <->
+      exists slot,
+        slot < n /\
+        active slot = true /\
+        value_at slot = Some l.
+Proof.
+  intros n active value_at l.
+  unfold selected_count.
+  split.
+  - intro Hcount.
+    destruct (count_slots_positive_exists _ _ Hcount)
+      as [slot [Hslot Hactive_value]].
+    exists slot. split; [exact Hslot|].
+    destruct (active slot) eqn:Hactive; [| discriminate].
+    split; [reflexivity|].
+    apply option_lit_eqb_true. exact Hactive_value.
+  - intros [slot [Hslot [Hactive Hvalue]]].
+    apply count_slots_true_positive with (slot := slot).
+    + exact Hslot.
+    + rewrite Hactive, Hvalue.
+      unfold option_lit_eqb.
+      destruct (lit_eq_dec l l) as [_ | Hneq]; [reflexivity| contradiction].
+Qed.
+
+Lemma air_selected_by_flags_selected_count :
+  forall width c flags l,
+    length c <= width ->
+    (air_selected_by_flags c flags l <->
+      selected_count
+        width
+        (fun slot => nth slot flags false)
+        (fun slot => nth_error c slot)
+        l > 0).
+Proof.
+  intros width c flags l Hlen.
+  split.
+  - intros [slot [Hnth Hflag]].
+    rewrite selected_count_active_value_sound.
+    exists slot. split.
+    + assert (slot < length c) as Hslot_len.
+      { apply nth_error_Some. rewrite Hnth. discriminate. }
+      lia.
+    + split.
+      * apply nth_error_true_nth. exact Hflag.
+      * exact Hnth.
+  - intro Hcount.
+    rewrite selected_count_active_value_sound in Hcount.
+    destruct Hcount as [slot [_ [Hflag Hnth]]].
+    exists slot. split; [exact Hnth|].
+    apply nth_true_nth_error. exact Hflag.
+Qed.
+
+Lemma air_left_source_selected_count :
+  forall width row l,
+    length (air_left_clause row) <= width ->
+    (air_left_source row l <->
+      selected_count
+        width
+        (slot_is_left_source row)
+        (fun slot => nth_error (air_left_clause row) slot)
+        l > 0).
+Proof.
+  intros width row l Hlen.
+  split.
+  - intros [Hin Hnot_pivot].
+    destruct (@in_nth_error_exists lit l (air_left_clause row) Hin)
+      as [slot Hnth].
+    rewrite selected_count_active_value_sound.
+    exists slot. split.
+    + assert (slot < length (air_left_clause row)) as Hslot_len.
+      { apply nth_error_Some. rewrite Hnth. discriminate. }
+      lia.
+    + split.
+      * unfold slot_is_left_source. rewrite Hnth.
+        destruct (lit_eq_dec l (pivot_pos (air_pivot row))) as [Heq | Hneq].
+        -- contradiction.
+        -- reflexivity.
+      * exact Hnth.
+  - intro Hcount.
+    rewrite selected_count_active_value_sound in Hcount.
+    destruct Hcount as [slot [_ [Hsource Hnth]]].
+    split.
+    + apply nth_error_In with (n := slot). exact Hnth.
+    + unfold slot_is_left_source in Hsource.
+      rewrite Hnth in Hsource.
+      destruct (lit_eq_dec l (pivot_pos (air_pivot row))) as [Heq | Hneq].
+      * discriminate.
+      * exact Hneq.
+Qed.
+
+Lemma air_right_source_selected_count :
+  forall width row l,
+    length (air_right_clause row) <= width ->
+    (air_right_source row l <->
+      selected_count
+        width
+        (slot_is_right_source row)
+        (fun slot => nth_error (air_right_clause row) slot)
+        l > 0).
+Proof.
+  intros width row l Hlen.
+  split.
+  - intros [Hin Hnot_pivot].
+    destruct (@in_nth_error_exists lit l (air_right_clause row) Hin)
+      as [slot Hnth].
+    rewrite selected_count_active_value_sound.
+    exists slot. split.
+    + assert (slot < length (air_right_clause row)) as Hslot_len.
+      { apply nth_error_Some. rewrite Hnth. discriminate. }
+      lia.
+    + split.
+      * unfold slot_is_right_source. rewrite Hnth.
+        destruct (lit_eq_dec l (pivot_neg (air_pivot row))) as [Heq | Hneq].
+        -- contradiction.
+        -- reflexivity.
+      * exact Hnth.
+  - intro Hcount.
+    rewrite selected_count_active_value_sound in Hcount.
+    destruct Hcount as [slot [_ [Hsource Hnth]]].
+    split.
+    + apply nth_error_In with (n := slot). exact Hnth.
+    + unfold slot_is_right_source in Hsource.
+      rewrite Hnth in Hsource.
+      destruct (lit_eq_dec l (pivot_neg (air_pivot row))) as [Heq | Hneq].
+      * discriminate.
+      * exact Hneq.
+Qed.
+
+Lemma trace_count_product_final_constraints_sources_sound :
+  forall width row l,
+    length (air_current_clause row) <= width ->
+    length (air_left_clause row) <= width ->
+    length (air_right_clause row) <= width ->
+    trace_count_product_final_constraints width row ->
+    (air_selected_by_flags (air_current_clause row) (air_left_keep_flags row) l <->
+      air_left_source row l) /\
+    (air_selected_by_flags (air_current_clause row) (air_right_keep_flags row) l <->
+      air_right_source row l).
+Proof.
+  intros width row l Hlen_current Hlen_left Hlen_right Hfinal.
+  destruct Hfinal as [_ [_ [_ [Hleft_fingerprint Hright_fingerprint]]]].
+  split.
+  - pose proof (@air_selected_by_flags_selected_count
+      width (air_current_clause row) (air_left_keep_flags row) l Hlen_current)
+      as Hselected_count.
+    pose proof (@air_left_source_selected_count width row l Hlen_left)
+      as Hsource_count.
+    rewrite Hselected_count, Hsource_count.
+    unfold same_fingerprint_product, fingerprint_slots in Hleft_fingerprint.
+    rewrite (Hleft_fingerprint l). reflexivity.
+  - pose proof (@air_selected_by_flags_selected_count
+      width (air_current_clause row) (air_right_keep_flags row) l Hlen_current)
+      as Hselected_count.
+    pose proof (@air_right_source_selected_count width row l Hlen_right)
+      as Hsource_count.
+    rewrite Hselected_count, Hsource_count.
+    unfold same_fingerprint_product, fingerprint_slots in Hright_fingerprint.
+    rewrite (Hright_fingerprint l). reflexivity.
 Qed.
 
 Lemma slot_is_left_pivot_sound :
@@ -795,7 +942,7 @@ Definition trace_resolution_logic_constraints
   air_left_id row > 0 /\
   air_right_id row > 0 /\
   trace_pivot_count_constraints width row /\
-  trace_resolution_multiset_constraints row /\
+  trace_count_product_final_constraints width row /\
   trace_current_clause_selection_constraints row.
 
 Definition resolution_trace_row_constraints
@@ -818,16 +965,16 @@ Proof.
   unfold resolution_trace_row_constraints in Htrace.
   destruct Htrace as [_ [_ [_ [_ [_ [_ Hlogic]]]]]].
   unfold trace_resolution_logic_constraints in Hlogic.
-  destruct Hlogic as [_ Hlogic].
-  destruct Hlogic as [_ Hlogic].
-  destruct Hlogic as [_ Hlogic].
+  destruct Hlogic as [Hlen_current Hlogic].
+  destruct Hlogic as [Hlen_left Hlogic].
+  destruct Hlogic as [Hlen_right Hlogic].
   destruct Hlogic as [Hsemantic Hlogic].
   destruct Hlogic as [Hderived Hlogic].
   destruct Hlogic as [Hentry_left Hlogic].
   destruct Hlogic as [Hentry_right Hlogic].
   destruct Hlogic as [Hleft_id_pos Hlogic].
   destruct Hlogic as [Hright_id_pos Hlogic].
-  destruct Hlogic as [Hpivot_counts [Hmultisets Hcurrent_selected]].
+  destruct Hlogic as [Hpivot_counts [Hcount_product_final Hcurrent_selected]].
   destruct (trace_pivot_count_constraints_sound Hpivot_counts)
     as [Hleft_pivot Hright_pivot].
   split; [exact Hsemantic|].
@@ -840,12 +987,14 @@ Proof.
   split; [exact Hright_pivot|].
   split.
   - intro l.
-    destruct (@trace_resolution_multiset_constraints_sound row l Hmultisets)
+    destruct (@trace_count_product_final_constraints_sources_sound
+      width row l Hlen_current Hlen_left Hlen_right Hcount_product_final)
       as [Hleft _].
     exact Hleft.
   - split.
     + intro l.
-      destruct (@trace_resolution_multiset_constraints_sound row l Hmultisets)
+      destruct (@trace_count_product_final_constraints_sources_sound
+        width row l Hlen_current Hlen_left Hlen_right Hcount_product_final)
         as [_ Hright].
       exact Hright.
     + intro l.

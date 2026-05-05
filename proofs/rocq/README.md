@@ -24,9 +24,9 @@ used by the AIR executor: zero witnesses, pivot equality flags, parent gap
 limbs, inverse/header columns, source/selected prefix counts, and fingerprint
 product accumulators. The resolution membership facts are not assumed directly:
 pivot membership is derived from pivot-count constraints, source/selected
-membership is derived from multiset constraints over the selected current
-literals and the parent clauses with the oriented pivot removed, and current
-clause membership is derived from per-slot keep-flag selection constraints.
+membership is derived from the AIR-style source/selected count and fingerprint
+accumulator final equalities, and current clause membership is derived from
+per-slot keep-flag selection constraints.
 `resolution_trace_matrix_steps_valid_with_rows_air_sound` then proves that
 these matrix-column constraints imply the previous `resolution_air_steps_valid`
 predicate.
@@ -47,9 +47,9 @@ matrix-column consistency predicates.
 
 The row-level resolution semantics match the executor and AIR orientation: the
 left parent drops only the positive pivot literal, and the right parent drops
-only the negative pivot literal. The keep/source constraints are represented as
-logical membership constraints over the current, left, and right clause blocks
-read from the matrix columns.
+only the negative pivot literal. The keep/source membership facts are proved
+from slot predicates over the current, left, and right clause blocks read from
+the matrix columns, not injected as direct row-level premises.
 
 The proof uses no `Axiom` and no `Admitted`.
 
