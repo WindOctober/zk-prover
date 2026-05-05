@@ -22,12 +22,14 @@ trace row at those matrix columns into a `ResolutionAirRow`.
 `resolution_trace_row_constraints` also constrains the auxiliary column blocks
 used by the AIR executor: zero witnesses, pivot equality flags, parent gap
 limbs, inverse/header columns, source/selected prefix counts, and fingerprint
-product accumulators. The resolution membership facts are not assumed directly:
-pivot membership is derived from pivot-count constraints, source/selected
-membership is derived from the AIR-style source/selected count and fingerprint
-accumulator final equalities, and current clause membership is derived from
-the AIR keep gate forcing each nonzero current literal to be selected by a
-left or right keep flag.
+product accumulators. Header facts such as `is_derived`, `is_semantic`, parent
+id nonzero-ness, and parent gap positivity are derived from header inverse/gap
+gates. The resolution membership facts are not assumed directly: pivot
+membership is derived from final pivot-count gates, source/selected membership
+is derived from the AIR-style source/selected count columns plus final
+accumulator equalities, and current clause membership is derived from the AIR
+keep gate forcing each nonzero current literal to be selected by a left or
+right keep flag.
 `resolution_trace_matrix_steps_valid_with_rows_air_sound` then proves that
 these matrix-column constraints imply the previous `resolution_air_steps_valid`
 predicate.

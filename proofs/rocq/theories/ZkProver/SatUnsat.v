@@ -345,6 +345,17 @@ Definition option_lit_code (value : option lit) : nat :=
 Definition bool_to_nat (b : bool) : nat :=
   if b then 1 else 0.
 
+Definition trace_header_gate_constraints
+    (row : ResolutionAirRow)
+    (left_id_inv right_id_inv left_gap_inv right_gap_inv : nat) : Prop :=
+  air_is_derived row = true /\
+  bool_to_nat (air_is_derived row) *
+    bool_to_nat (negb (air_is_semantic row)) = 0 /\
+  air_left_id row * left_id_inv = 1 /\
+  air_right_id row * right_id_inv = 1 /\
+  (air_entry_id row - air_left_id row) * left_gap_inv = 1 /\
+  (air_entry_id row - air_right_id row) * right_gap_inv = 1.
+
 Fixpoint count_slots (n : nat) (active : nat -> bool) : nat :=
   match n with
   | 0 => 0
@@ -457,6 +468,44 @@ Definition trace_pivot_count_constraints (width : nat) (row : ResolutionAirRow) 
   count_slots width (slot_is_left_pivot row) = 1 /\
   count_slots width (slot_is_right_neg_pivot row) = 1.
 
+Definition trace_accumulator_final_gate_constraints
+    (width : nat) (trace : resolution_trace_matrix)
+    (row_index : nat) (row : ResolutionAirRow) : Prop :=
+  width > 0 /\
+  trace_pivot_count_constraints width row /\
+  (forall last,
+    S last = width ->
+    trace row_index (res_left_source_count_base width + last) =
+      trace row_index (res_left_selected_count_base width + last) /\
+    trace row_index (res_right_source_count_base width + last) =
+      trace row_index (res_right_selected_count_base width + last) /\
+    trace row_index (res_left_source_prod_a_base width + last) =
+      trace row_index (res_left_selected_prod_a_base width + last) /\
+    trace row_index (res_left_source_prod_b_base width + last) =
+      trace row_index (res_left_selected_prod_b_base width + last) /\
+    trace row_index (res_right_source_prod_a_base width + last) =
+      trace row_index (res_right_selected_prod_a_base width + last) /\
+    trace row_index (res_right_source_prod_b_base width + last) =
+      trace row_index (res_right_selected_prod_b_base width + last)) /\
+  same_fingerprint_product
+    (fingerprint_slots
+      width
+      (slot_is_left_source row)
+      (fun slot => nth_error (air_left_clause row) slot))
+    (fingerprint_slots
+      width
+      (slot_is_left_selected row)
+      (fun slot => nth_error (air_current_clause row) slot)) /\
+  same_fingerprint_product
+    (fingerprint_slots
+      width
+      (slot_is_right_source row)
+      (fun slot => nth_error (air_right_clause row) slot))
+    (fingerprint_slots
+      width
+      (slot_is_right_selected row)
+      (fun slot => nth_error (air_current_clause row) slot)).
+
 Definition resolution_clause_bus_constraints
     (m : matrix lit) (row : ResolutionAirRow) : Prop :=
   row_encodes_clause m (air_entry_id row - 1) (air_current_clause row) /\
@@ -498,6 +547,8 @@ Definition trace_header_aux_columns
     trace_nat trace row_index RES_RIGHT_ID_INV_COL right_id_inv /\
     trace_nat trace row_index RES_LEFT_GAP_INV_COL left_gap_inv /\
     trace_nat trace row_index RES_RIGHT_GAP_INV_COL right_gap_inv /\
+    trace_header_gate_constraints
+      row left_id_inv right_id_inv left_gap_inv right_gap_inv /\
     trace_nat_block
       trace row_index (res_pivot_delta_base width) RES_RANGE_LIMBS [0; 0] /\
     trace_nat_block
@@ -629,6 +680,78 @@ Definition air_left_source (row : ResolutionAirRow) (l : lit) : Prop :=
 
 Definition air_right_source (row : ResolutionAirRow) (l : lit) : Prop :=
   In l (air_right_clause row) /\ l <> pivot_neg (air_pivot row).
+
+Lemma nat_mul_eq_one_positive_left :
+  forall a b,
+    a * b = 1 ->
+    a > 0.
+Proof.
+  intros a b Hmul.
+  destruct a; simpl in Hmul; lia.
+Qed.
+
+Lemma nat_gap_mul_eq_one_gt :
+  forall entry parent inv,
+    (entry - parent) * inv = 1 ->
+    entry > parent.
+Proof.
+  intros entry parent inv Hmul.
+  pose proof (nat_mul_eq_one_positive_left _ _ Hmul) as Hgap_pos.
+  lia.
+Qed.
+
+Lemma trace_header_gate_constraints_sound :
+  forall row left_id_inv right_id_inv left_gap_inv right_gap_inv,
+    trace_header_gate_constraints
+      row left_id_inv right_id_inv left_gap_inv right_gap_inv ->
+    air_is_semantic row = true /\
+    air_is_derived row = true /\
+    air_entry_id row > air_left_id row /\
+    air_entry_id row > air_right_id row /\
+    air_left_id row > 0 /\
+    air_right_id row > 0.
+Proof.
+  intros row left_id_inv right_id_inv left_gap_inv right_gap_inv Hgates.
+  destruct Hgates as
+    [Hderived [Hsemantic_gate [Hleft_id [Hright_id [Hleft_gap Hright_gap]]]]].
+  assert (Hsemantic : air_is_semantic row = true).
+  { unfold bool_to_nat in Hsemantic_gate.
+    rewrite Hderived in Hsemantic_gate.
+    destruct (air_is_semantic row); [reflexivity| discriminate]. }
+  split; [exact Hsemantic|].
+  split; [exact Hderived|].
+  split.
+  - apply nat_gap_mul_eq_one_gt with (inv := left_gap_inv).
+    exact Hleft_gap.
+  - split.
+    + apply nat_gap_mul_eq_one_gt with (inv := right_gap_inv).
+      exact Hright_gap.
+    + split.
+      * apply nat_mul_eq_one_positive_left with (b := left_id_inv).
+        exact Hleft_id.
+      * apply nat_mul_eq_one_positive_left with (b := right_id_inv).
+        exact Hright_id.
+Qed.
+
+Lemma trace_header_aux_columns_sound :
+  forall width trace row_index row,
+    trace_header_aux_columns width trace row_index row ->
+    air_is_semantic row = true /\
+    air_is_derived row = true /\
+    air_entry_id row > air_left_id row /\
+    air_entry_id row > air_right_id row /\
+    air_left_id row > 0 /\
+    air_right_id row > 0.
+Proof.
+  intros width trace row_index row Hheader.
+  unfold trace_header_aux_columns in Hheader.
+  destruct Hheader as [_ [_ Hexists]].
+  destruct Hexists as
+    (pivot_inv & commit_acc_a & commit_acc_b & clause_mult &
+     left_id_inv & right_id_inv & left_gap_inv & right_gap_inv & Hcols).
+  destruct Hcols as (_ & _ & _ & _ & _ & _ & _ & _ & Hgates & _).
+  exact (trace_header_gate_constraints_sound Hgates).
+Qed.
 
 Lemma trace_current_clause_selection_constraints_sound :
   forall row l,
@@ -904,6 +1027,39 @@ Proof.
     rewrite (Hright_fingerprint l). reflexivity.
 Qed.
 
+Lemma trace_accumulator_final_gate_constraints_sound :
+  forall width trace row_index row,
+    trace_accumulator_final_gate_constraints width trace row_index row ->
+    trace_count_product_columns width trace row_index row ->
+    trace_pivot_count_constraints width row /\
+    trace_count_product_final_constraints width row.
+Proof.
+  intros width trace row_index row Hfinal Hcolumns.
+  destruct Hfinal as [Hwidth_pos [Hpivot [Hlast_equalities
+    [Hleft_fingerprint Hright_fingerprint]]]].
+  split; [exact Hpivot|].
+  split; [exact Hwidth_pos|].
+  destruct width as [| last].
+  - lia.
+  - specialize (Hlast_equalities last eq_refl) as
+      [Hleft_count_cell [Hright_count_cell _]].
+    assert (last < S last) as Hlast_lt by lia.
+    specialize (Hcolumns last Hlast_lt) as
+      [Hleft_source_count [Hleft_selected_count
+      [Hright_source_count [Hright_selected_count _]]]].
+    split.
+    + unfold trace_nat in Hleft_source_count, Hleft_selected_count.
+      rewrite Hleft_source_count in Hleft_count_cell.
+      rewrite Hleft_selected_count in Hleft_count_cell.
+      inversion Hleft_count_cell. assumption.
+    + split.
+      * unfold trace_nat in Hright_source_count, Hright_selected_count.
+        rewrite Hright_source_count in Hright_count_cell.
+        rewrite Hright_selected_count in Hright_count_cell.
+        inversion Hright_count_cell. assumption.
+      * split; exact Hleft_fingerprint || exact Hright_fingerprint.
+Qed.
+
 Lemma slot_is_left_pivot_sound :
   forall row slot,
     slot_is_left_pivot row slot = true ->
@@ -970,19 +1126,11 @@ Definition resolution_air_row_constraints (row : ResolutionAirRow) : Prop :=
         air_selected_by_flags (air_current_clause row) (air_left_keep_flags row) l \/
         air_selected_by_flags (air_current_clause row) (air_right_keep_flags row) l).
 
-Definition trace_resolution_logic_constraints
+Definition trace_row_local_gate_constraints
     (width : nat) (row : ResolutionAirRow) : Prop :=
   length (air_current_clause row) <= width /\
   length (air_left_clause row) <= width /\
   length (air_right_clause row) <= width /\
-  air_is_semantic row = true /\
-  air_is_derived row = true /\
-  air_entry_id row > air_left_id row /\
-  air_entry_id row > air_right_id row /\
-  air_left_id row > 0 /\
-  air_right_id row > 0 /\
-  trace_pivot_count_constraints width row /\
-  trace_count_product_final_constraints width row /\
   trace_current_keep_gate_constraints width row.
 
 Definition resolution_trace_row_constraints
@@ -994,7 +1142,8 @@ Definition resolution_trace_row_constraints
   trace_literal_aux_columns width trace row_index 2 (air_right_clause row) /\
   trace_pivot_flag_columns width trace row_index row /\
   trace_count_product_columns width trace row_index row /\
-  trace_resolution_logic_constraints width row.
+  trace_accumulator_final_gate_constraints width trace row_index row /\
+  trace_row_local_gate_constraints width row.
 
 Theorem resolution_trace_row_constraints_sound :
   forall width trace row_index row,
@@ -1003,18 +1152,17 @@ Theorem resolution_trace_row_constraints_sound :
 Proof.
   intros width trace row_index row Htrace.
   unfold resolution_trace_row_constraints in Htrace.
-  destruct Htrace as [_ [_ [_ [_ [_ [_ Hlogic]]]]]].
-  unfold trace_resolution_logic_constraints in Hlogic.
+  destruct Htrace as [Hheader [_ [_ [_ [_ [Hcount_columns [Hfinal_gates Hlogic]]]]]]].
+  destruct (trace_header_aux_columns_sound Hheader)
+    as [Hsemantic [Hderived [Hentry_left [Hentry_right
+      [Hleft_id_pos Hright_id_pos]]]]].
+  destruct (trace_accumulator_final_gate_constraints_sound
+    Hfinal_gates Hcount_columns) as [Hpivot_counts Hcount_product_final].
+  unfold trace_row_local_gate_constraints in Hlogic.
   destruct Hlogic as [Hlen_current Hlogic].
   destruct Hlogic as [Hlen_left Hlogic].
   destruct Hlogic as [Hlen_right Hlogic].
-  destruct Hlogic as [Hsemantic Hlogic].
-  destruct Hlogic as [Hderived Hlogic].
-  destruct Hlogic as [Hentry_left Hlogic].
-  destruct Hlogic as [Hentry_right Hlogic].
-  destruct Hlogic as [Hleft_id_pos Hlogic].
-  destruct Hlogic as [Hright_id_pos Hlogic].
-  destruct Hlogic as [Hpivot_counts [Hcount_product_final Hcurrent_keep_gates]].
+  rename Hlogic into Hcurrent_keep_gates.
   destruct (trace_pivot_count_constraints_sound Hpivot_counts)
     as [Hleft_pivot Hright_pivot].
   pose proof (@trace_current_keep_gate_constraints_sound
