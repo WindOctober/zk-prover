@@ -26,10 +26,11 @@ product accumulators. Header facts such as `is_derived`, `is_semantic`, parent
 id nonzero-ness, and parent gap positivity are derived from header inverse/gap
 gates. The resolution membership facts are not assumed directly: pivot
 membership is derived from final pivot-count gates, source/selected membership
-is derived from the AIR-style source/selected count columns plus final
-accumulator equalities, and current clause membership is derived from the AIR
-keep gate forcing each nonzero current literal to be selected by a left or
-right keep flag.
+is derived from the AIR-style source/selected count columns, final product-cell
+equalities, and an explicit fingerprint soundness boundary that turns the two
+gamma product equalities into per-literal count equality. Current clause
+membership is derived from the AIR keep gate forcing each nonzero current
+literal to be selected by a left or right keep flag.
 `resolution_trace_matrix_steps_valid_with_rows_air_sound` then proves that
 these matrix-column constraints imply the previous `resolution_air_steps_valid`
 predicate.
@@ -45,8 +46,10 @@ matrix rows with each derived current clause, deriving the logical
 
 This proof intentionally does not formalize finite-field collision bounds for
 the fingerprint products or the STARK/permutation argument. Those belong below
-the matrix/constraint boundary; here they are represented as explicit
-matrix-column consistency predicates.
+the matrix/constraint boundary. The product accumulator columns and their final
+equalities are modeled explicitly; the collision-free step from product
+equalities to per-literal multiset equality is represented by
+`trace_fingerprint_product_soundness`.
 
 The row-level resolution semantics match the executor and AIR orientation: the
 left parent drops only the positive pivot literal, and the right parent drops

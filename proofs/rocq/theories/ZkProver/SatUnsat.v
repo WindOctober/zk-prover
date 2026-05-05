@@ -418,6 +418,75 @@ Definition same_fingerprint_product
     (left right : fingerprint_product) : Prop :=
   forall l, left l = right l.
 
+Definition left_fingerprint_product_equalities
+    (width : nat) (row : ResolutionAirRow) : Prop :=
+  product_slots
+    width
+    (slot_is_left_source row)
+    (fun slot => nth_error (air_left_clause row) slot)
+    RES_FP_GAMMA_A =
+  product_slots
+    width
+    (slot_is_left_selected row)
+    (fun slot => nth_error (air_current_clause row) slot)
+    RES_FP_GAMMA_A /\
+  product_slots
+    width
+    (slot_is_left_source row)
+    (fun slot => nth_error (air_left_clause row) slot)
+    RES_FP_GAMMA_B =
+  product_slots
+    width
+    (slot_is_left_selected row)
+    (fun slot => nth_error (air_current_clause row) slot)
+    RES_FP_GAMMA_B.
+
+Definition right_fingerprint_product_equalities
+    (width : nat) (row : ResolutionAirRow) : Prop :=
+  product_slots
+    width
+    (slot_is_right_source row)
+    (fun slot => nth_error (air_right_clause row) slot)
+    RES_FP_GAMMA_A =
+  product_slots
+    width
+    (slot_is_right_selected row)
+    (fun slot => nth_error (air_current_clause row) slot)
+    RES_FP_GAMMA_A /\
+  product_slots
+    width
+    (slot_is_right_source row)
+    (fun slot => nth_error (air_right_clause row) slot)
+    RES_FP_GAMMA_B =
+  product_slots
+    width
+    (slot_is_right_selected row)
+    (fun slot => nth_error (air_current_clause row) slot)
+    RES_FP_GAMMA_B.
+
+Definition trace_fingerprint_product_soundness
+    (width : nat) (row : ResolutionAirRow) : Prop :=
+  left_fingerprint_product_equalities width row ->
+  right_fingerprint_product_equalities width row ->
+  same_fingerprint_product
+    (fingerprint_slots
+      width
+      (slot_is_left_source row)
+      (fun slot => nth_error (air_left_clause row) slot))
+    (fingerprint_slots
+      width
+      (slot_is_left_selected row)
+      (fun slot => nth_error (air_current_clause row) slot)) /\
+  same_fingerprint_product
+    (fingerprint_slots
+      width
+      (slot_is_right_source row)
+      (fun slot => nth_error (air_right_clause row) slot))
+    (fingerprint_slots
+      width
+      (slot_is_right_selected row)
+      (fun slot => nth_error (air_current_clause row) slot)).
+
 Definition trace_count_product_final_constraints
     (width : nat) (row : ResolutionAirRow) : Prop :=
   width > 0 /\
@@ -486,25 +555,7 @@ Definition trace_accumulator_final_gate_constraints
     trace row_index (res_right_source_prod_a_base width + last) =
       trace row_index (res_right_selected_prod_a_base width + last) /\
     trace row_index (res_right_source_prod_b_base width + last) =
-      trace row_index (res_right_selected_prod_b_base width + last)) /\
-  same_fingerprint_product
-    (fingerprint_slots
-      width
-      (slot_is_left_source row)
-      (fun slot => nth_error (air_left_clause row) slot))
-    (fingerprint_slots
-      width
-      (slot_is_left_selected row)
-      (fun slot => nth_error (air_current_clause row) slot)) /\
-  same_fingerprint_product
-    (fingerprint_slots
-      width
-      (slot_is_right_source row)
-      (fun slot => nth_error (air_right_clause row) slot))
-    (fingerprint_slots
-      width
-      (slot_is_right_selected row)
-      (fun slot => nth_error (air_current_clause row) slot)).
+      trace row_index (res_right_selected_prod_b_base width + last)).
 
 Definition resolution_clause_bus_constraints
     (m : matrix lit) (row : ResolutionAirRow) : Prop :=
@@ -1027,36 +1078,88 @@ Proof.
     rewrite (Hright_fingerprint l). reflexivity.
 Qed.
 
+Lemma trace_nat_cell_equal :
+  forall trace row left_col right_col left_value right_value,
+    trace_nat trace row left_col left_value ->
+    trace_nat trace row right_col right_value ->
+    trace row left_col = trace row right_col ->
+    left_value = right_value.
+Proof.
+  intros trace row left_col right_col left_value right_value
+    Hleft Hright Heq.
+  unfold trace_nat in Hleft, Hright.
+  rewrite Hleft in Heq.
+  rewrite Hright in Heq.
+  inversion Heq. reflexivity.
+Qed.
+
 Lemma trace_accumulator_final_gate_constraints_sound :
   forall width trace row_index row,
     trace_accumulator_final_gate_constraints width trace row_index row ->
     trace_count_product_columns width trace row_index row ->
+    trace_fingerprint_product_soundness width row ->
     trace_pivot_count_constraints width row /\
     trace_count_product_final_constraints width row.
 Proof.
-  intros width trace row_index row Hfinal Hcolumns.
-  destruct Hfinal as [Hwidth_pos [Hpivot [Hlast_equalities
-    [Hleft_fingerprint Hright_fingerprint]]]].
+  intros width trace row_index row Hfinal Hcolumns Hfingerprint_sound.
+  destruct Hfinal as [Hwidth_pos [Hpivot Hlast_equalities]].
   split; [exact Hpivot|].
   split; [exact Hwidth_pos|].
   destruct width as [| last].
   - lia.
   - specialize (Hlast_equalities last eq_refl) as
-      [Hleft_count_cell [Hright_count_cell _]].
+      [Hleft_count_cell [Hright_count_cell
+      [Hleft_prod_a_cell [Hleft_prod_b_cell
+      [Hright_prod_a_cell Hright_prod_b_cell]]]]].
     assert (last < S last) as Hlast_lt by lia.
-    specialize (Hcolumns last Hlast_lt) as
-      [Hleft_source_count [Hleft_selected_count
-      [Hright_source_count [Hright_selected_count _]]]].
+    specialize (Hcolumns last Hlast_lt) as Hcolumns_last.
+    destruct Hcolumns_last as
+      (Hleft_source_count & Hleft_selected_count &
+       Hright_source_count & Hright_selected_count &
+       Hleft_source_prod_a & Hleft_source_prod_b &
+       Hleft_selected_prod_a & Hleft_selected_prod_b &
+       Hright_source_prod_a & Hright_source_prod_b &
+       Hright_selected_prod_a & Hright_selected_prod_b).
+    assert (Hleft_counts :
+      count_slots (S last) (slot_is_left_source row) =
+      count_slots (S last) (slot_is_left_selected row)).
+    { eapply trace_nat_cell_equal.
+      - exact Hleft_source_count.
+      - exact Hleft_selected_count.
+      - exact Hleft_count_cell. }
+    assert (Hright_counts :
+      count_slots (S last) (slot_is_right_source row) =
+      count_slots (S last) (slot_is_right_selected row)).
+    { eapply trace_nat_cell_equal.
+      - exact Hright_source_count.
+      - exact Hright_selected_count.
+      - exact Hright_count_cell. }
+    assert (Hleft_products : left_fingerprint_product_equalities (S last) row).
+    { split.
+      - eapply trace_nat_cell_equal.
+        + exact Hleft_source_prod_a.
+        + exact Hleft_selected_prod_a.
+        + exact Hleft_prod_a_cell.
+      - eapply trace_nat_cell_equal.
+        + exact Hleft_source_prod_b.
+        + exact Hleft_selected_prod_b.
+        + exact Hleft_prod_b_cell. }
+    assert (Hright_products : right_fingerprint_product_equalities (S last) row).
+    { split.
+      - eapply trace_nat_cell_equal.
+        + exact Hright_source_prod_a.
+        + exact Hright_selected_prod_a.
+        + exact Hright_prod_a_cell.
+      - eapply trace_nat_cell_equal.
+        + exact Hright_source_prod_b.
+        + exact Hright_selected_prod_b.
+        + exact Hright_prod_b_cell. }
+    destruct (Hfingerprint_sound Hleft_products Hright_products)
+      as [Hleft_fingerprint Hright_fingerprint].
     split.
-    + unfold trace_nat in Hleft_source_count, Hleft_selected_count.
-      rewrite Hleft_source_count in Hleft_count_cell.
-      rewrite Hleft_selected_count in Hleft_count_cell.
-      inversion Hleft_count_cell. assumption.
+    + exact Hleft_counts.
     + split.
-      * unfold trace_nat in Hright_source_count, Hright_selected_count.
-        rewrite Hright_source_count in Hright_count_cell.
-        rewrite Hright_selected_count in Hright_count_cell.
-        inversion Hright_count_cell. assumption.
+      * exact Hright_counts.
       * split; exact Hleft_fingerprint || exact Hright_fingerprint.
 Qed.
 
@@ -1143,6 +1246,7 @@ Definition resolution_trace_row_constraints
   trace_pivot_flag_columns width trace row_index row /\
   trace_count_product_columns width trace row_index row /\
   trace_accumulator_final_gate_constraints width trace row_index row /\
+  trace_fingerprint_product_soundness width row /\
   trace_row_local_gate_constraints width row.
 
 Theorem resolution_trace_row_constraints_sound :
@@ -1152,12 +1256,14 @@ Theorem resolution_trace_row_constraints_sound :
 Proof.
   intros width trace row_index row Htrace.
   unfold resolution_trace_row_constraints in Htrace.
-  destruct Htrace as [Hheader [_ [_ [_ [_ [Hcount_columns [Hfinal_gates Hlogic]]]]]]].
+  destruct Htrace as [Hheader [_ [_ [_ [_ [Hcount_columns
+    [Hfinal_gates [Hfingerprint_sound Hlogic]]]]]]]].
   destruct (trace_header_aux_columns_sound Hheader)
     as [Hsemantic [Hderived [Hentry_left [Hentry_right
       [Hleft_id_pos Hright_id_pos]]]]].
   destruct (trace_accumulator_final_gate_constraints_sound
-    Hfinal_gates Hcount_columns) as [Hpivot_counts Hcount_product_final].
+    Hfinal_gates Hcount_columns Hfingerprint_sound)
+    as [Hpivot_counts Hcount_product_final].
   unfold trace_row_local_gate_constraints in Hlogic.
   destruct Hlogic as [Hlen_current Hlogic].
   destruct Hlogic as [Hlen_left Hlogic].
