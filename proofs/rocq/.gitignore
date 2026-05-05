@@ -1,0 +1,7 @@
+*.aux
+*.glob
+*.vo
+*.vos
+*.vok
+.lia.cache
+.opam-switch/

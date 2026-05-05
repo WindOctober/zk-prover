@@ -22,6 +22,15 @@ docker run --rm \
 
 Use `smoke` instead of `zkunsat-smoke` to also run `cargo check --workspace --all-targets --features proof-backends`.
 
+Check the Rocq proof artifact:
+
+```bash
+docker run --rm zk-prover-paper:latest proof
+```
+
+The image installs `rocq-prover.9.0.0` through opam and checks
+`proofs/rocq/theories/ZkProver/SatUnsat.v` with `rocq c`.
+
 Run the RQ2 runner on the smallest checked-in ZKUNSAT proof:
 
 ```bash

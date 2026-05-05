@@ -4,6 +4,7 @@ FROM ubuntu:22.04
 ARG DEBIAN_FRONTEND=noninteractive
 ARG RUST_TOOLCHAIN=1.94.1
 ARG SP1_VERSION=6.0.2
+ARG ROCQ_VERSION=9.0.0
 ARG ZKUNSAT_REPO=https://github.com/PP-FM/ZKUNSAT.git
 ARG ZKUNSAT_REV=9970d3d3f838425e04d0266b0ce84a55202d9c5b
 ARG EMP_TOOL_REV=11093a7d2160e7e7a4dcae3ffd9e6935bf2b8c1c
@@ -22,7 +23,8 @@ ENV CPATH=/workspace/ZKUNSAT/.local/include:/usr/include/x86_64-linux-gnu
 ENV LIBRARY_PATH=/workspace/ZKUNSAT/.local/lib
 ENV LD_LIBRARY_PATH=/workspace/ZKUNSAT/.local/lib
 ENV PKG_CONFIG_PATH=/workspace/ZKUNSAT/.local/lib/pkgconfig
-ENV PATH=/root/.cargo/bin:/root/.sp1/bin:/workspace/zk-prover/scripts/docker:$PATH
+ENV OPAMROOT=/opt/opam
+ENV PATH=/opt/opam/rocq/bin:/root/.cargo/bin:/root/.sp1/bin:/workspace/zk-prover/scripts/docker:$PATH
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends software-properties-common \
@@ -39,6 +41,8 @@ RUN apt-get update \
       lld \
       m4 \
       make \
+      ocaml \
+      opam \
       picosat \
       pkg-config \
       protobuf-compiler \
@@ -61,6 +65,12 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     && rustup component add rustfmt clippy \
     && curl -L https://sp1up.succinct.xyz | bash \
     && /root/.sp1/bin/sp1up -v "${SP1_VERSION}"
+
+RUN opam init --disable-sandboxing --bare -y \
+    && opam switch create rocq ocaml-system -y \
+    && opam install --switch=rocq -y "rocq-prover.${ROCQ_VERSION}" \
+    && opam clean -a -c -s --logs \
+    && opam exec --switch=rocq -- rocq --version
 
 WORKDIR /workspace
 COPY docker/zkunsat-local.patch /tmp/zkunsat-local.patch

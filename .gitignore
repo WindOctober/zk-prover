@@ -3,3 +3,4 @@ target/
 .cache/
 artifacts/
 Data/
+proofs/rocq/.opam-switch/

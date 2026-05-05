@@ -1,0 +1,15 @@
+opam-version: "2.0"
+synopsis: "Rocq proof artifacts for ZK-ProVer circuit-level SAT/UNSAT soundness"
+description: """
+This package records the Rocq prover dependency used to check the proof
+artifacts under proofs/rocq.  The development intentionally depends only on
+the Rocq standard library.
+"""
+maintainer: "ZK-ProVer authors"
+license: "MIT"
+depends: [
+  "rocq-prover" {= "9.0.0"}
+]
+build: [
+  [make "COQC=rocq c"]
+]

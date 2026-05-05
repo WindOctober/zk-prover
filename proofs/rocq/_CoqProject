@@ -1,0 +1,2 @@
+-Q theories ZkProver
+theories/ZkProver/SatUnsat.v

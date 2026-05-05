@@ -22,6 +22,7 @@ Usage: reproduce_paper.sh <command>
 Commands:
   help          Show this message.
   smoke         Build-check the Rust workspace and run the smallest ZKUNSAT baseline instance.
+  proof         Check the Rocq circuit-level SAT/UNSAT soundness development.
   zkunsat-smoke Run only the smallest ZKUNSAT baseline instance.
   rq1           Reproduce Table 2 / RQ1 with scripts/run_rq1_bench.sh.
   rq1-smoke     Run the RQ1 pipeline without SP1 proof generation.
@@ -49,6 +50,19 @@ require_file() {
     echo "missing required path: $path" >&2
     exit 1
   fi
+}
+
+default_coqc() {
+  if command -v rocq >/dev/null 2>&1; then
+    echo "rocq c"
+  else
+    echo "coqc"
+  fi
+}
+
+run_rocq_proofs() {
+  local coqc="${COQC:-$(default_coqc)}"
+  make -C "$ROOT/proofs/rocq" "COQC=$coqc" clean all
 }
 
 run_zkunsat_smoke() {
@@ -94,6 +108,9 @@ case "$cmd" in
   smoke)
     cargo check --workspace --all-targets --features proof-backends
     run_zkunsat_smoke
+    ;;
+  proof)
+    run_rocq_proofs
     ;;
   zkunsat-smoke)
     run_zkunsat_smoke

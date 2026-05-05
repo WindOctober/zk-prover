@@ -4,6 +4,7 @@ artifacts
 target
 Data
 notes
+proofs/rocq/.opam-switch
 
 Dockerfile
 docker/README.md
